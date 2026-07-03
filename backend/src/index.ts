@@ -15,7 +15,7 @@ const ETH_HEADER_SIZE = 14;
 
 // E-Link is now a real network device (W5500, IP + MAC) — talk to it over UDP, not serial
 const ELINK_LOCAL_PORT = Number(process.env.ELINK_LOCAL_PORT ?? 6001);
-let elinkRemoteIp = process.env.ELINK_REMOTE_IP ?? "192.168.1.50";
+let elinkRemoteIp = process.env.ELINK_REMOTE_IP ?? "10.86.110.200";
 let elinkRemotePort = Number(process.env.ELINK_REMOTE_PORT ?? 5000);
 
 // ─── Loggers ──────────────────────────────────────────────────────────────────
@@ -233,7 +233,7 @@ const httpServer = http.createServer((req, res) => {
     res.end(); return;
   }
 
-  // Send command — E-Link (UDP to W5500) preferred, HaLow serial as fallback
+  // Send command via E-Link UDP (W5500)
   if (req.method === "POST" && req.url?.startsWith("/cmd/")) {
     const cmdName = req.url.slice(5).toUpperCase() as keyof typeof CMD;
     if (!(cmdName in CMD)) { res.writeHead(400, cors); res.end(JSON.stringify({ error: "Unknown command" })); return; }
@@ -244,26 +244,13 @@ const httpServer = http.createServer((req, res) => {
       const payload = Buffer.from(params);
       const frame = buildCommand(CMD[cmdName] as CmdId, payload);
 
-      if (elinkSocket) {
-        try {
-          await sendElinkCommand(frame);
-          console.log(`[cmd] Sent ${cmdName} via E-Link UDP to ${elinkRemoteIp}:${elinkRemotePort}`);
-          res.writeHead(200, cors); res.end(JSON.stringify({ ok: true, cmd: cmdName, via: "elink-udp" }));
-        } catch (e) {
-          res.writeHead(500, cors); res.end(JSON.stringify({ error: String(e) }));
-        }
-        return;
+      try {
+        await sendElinkCommand(frame);
+        console.log(`[cmd] Sent ${cmdName} via E-Link UDP to ${elinkRemoteIp}:${elinkRemotePort}`);
+        res.writeHead(200, cors); res.end(JSON.stringify({ ok: true, cmd: cmdName }));
+      } catch (e) {
+        res.writeHead(500, cors); res.end(JSON.stringify({ error: String(e) }));
       }
-
-      if (halowSerial?.isOpen) {
-        halowSerial.write(frame, (err) => {
-          if (err) { res.writeHead(500, cors); res.end(JSON.stringify({ error: err.message })); }
-          else { console.log(`[cmd] Sent ${cmdName} via HaLow serial`); res.writeHead(200, cors); res.end(JSON.stringify({ ok: true, cmd: cmdName, via: "halow-serial" })); }
-        });
-        return;
-      }
-
-      res.writeHead(503, cors); res.end(JSON.stringify({ error: "No E-Link/HaLow link available" }));
     }); return;
   }
 
