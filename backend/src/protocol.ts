@@ -146,24 +146,26 @@ export function parsePacket(buf: Buffer): BlessPacket | null {
 }
 
 /**
- * E-Link uplink command builder — Table 428 of BX38_BLESS_SED_v2
+ * E-Link uplink command builder — matches firmware command_handler.c switch(cmd_id)
  *
- * Frame: SYNC_1(2) + SYNC_2(2) + CMD_ID(1) + PAYLOAD_SIZE(1) + PAYLOAD(n) + CHECKSUM(2)
+ * Frame: SYNC_1(2) + SYNC_2(2) + CMD_ID(1) + PAYLOAD_SIZE(1) + PAYLOAD(2) + CHECKSUM(2)
  * SYNC_1 = 0xE175, SYNC_2 = 0xC245
  */
 export const CMD = {
+  // System Commands
   SYS_RESET: 0x01,
-  SYS_ON: 0x02,
-  SYS_OFF: 0x03,
-  SYS_START: 0x04,
-  SYS_STOP: 0x05,
-  PING: 0x06,
+  SYS_START: 0x02,
+  SYS_STOP: 0x03,
+  PING: 0x04,
+  // Survival Commands
   HEAT_MANUAL: 0x10,
   HEAT_AUTO: 0x11,
+  // RF Commands
   HALOW_CONNECT: 0x20,
   SET_TX_POWER: 0x21,
   SET_MCS_MODE: 0x22,
   RF_SILENCE: 0x23,
+  // Data Management Commands
   SAVE_DATA: 0x30,
   SEND_HALOW: 0x31,
   SEND_ELINK: 0x32,
@@ -182,7 +184,10 @@ export function buildCommand(cmdId: CmdId, payload: Buffer = Buffer.alloc(0)): B
   frame.writeUInt8(Math.min(payload.length, 2), 5);
   payload.copy(frame, 6, 0, Math.min(payload.length, 2));
 
-  const checksum = crc16(frame, 8);
+  // Command checksum: sum of first 8 header/payload bytes, truncated to 16 bits
+  let sum = 0;
+  for (let i = 0; i < 8; i++) sum += frame[i];
+  const checksum = sum & 0xffff;
   frame.writeUInt16LE(checksum, 8);
 
   return frame;

@@ -20,20 +20,15 @@ interface CommandDef {
 const COMMANDS: CommandDef[] = [
   // System
   { label: "PING",       cmd: "PING",       description: "Comprueba que el payload responde" },
-  { label: "SYS ON",     cmd: "SYS_ON",     description: "Enciende e inicializa el experimento" },
   { label: "SYS START",  cmd: "SYS_START",  description: "Inicia operaciones del experimento" },
   { label: "SYS STOP",   cmd: "SYS_STOP",   description: "Detiene el experimento (MCU en idle)", danger: true },
-  { label: "SYS OFF",    cmd: "SYS_OFF",    description: "Apagado seguro del experimento", danger: true },
   { label: "SYS RESET",  cmd: "SYS_RESET",  description: "Reset del sistema", danger: true },
   // Heating
   {
     label: "HEAT MANUAL", cmd: "HEAT_MANUAL", description: "Control manual del calefactor",
     params: [{ name: "Duty Cycle", unit: "%", min: 0, max: 100, default: 0 }],
   },
-  {
-    label: "HEAT AUTO", cmd: "HEAT_AUTO", description: "Control automático (PID) del calefactor",
-    params: [{ name: "Setpoint", unit: "°C", min: -40, max: 40, default: -10 }],
-  },
+  { label: "HEAT AUTO", cmd: "HEAT_AUTO", description: "Control automático (PID) del calefactor" },
   // RF / HaLow
   { label: "HaLow CONNECT", cmd: "HALOW_CONNECT", description: "Fuerza reconexión del módulo HaLow" },
   {

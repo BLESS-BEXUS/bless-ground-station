@@ -74,7 +74,7 @@ interface LiveDataContextValue {
   toggleLogging: () => Promise<void>;
   sendCommand: (cmd: string, params?: number[]) => Promise<{ ok: boolean; error?: string }>;
   changePort: (port: string) => Promise<{ ok: boolean; error?: string }>;
-  changeElinkPort: (port: string) => Promise<{ ok: boolean; error?: string }>;
+  changeElinkPort: (ip: string, port?: number) => Promise<{ ok: boolean; error?: string }>;
   listPorts: () => Promise<{ path: string; manufacturer: string }[]>;
 }
 
@@ -356,12 +356,12 @@ export function LiveDataProvider({ children }: { children: React.ReactNode }) {
     await fetch(`${HTTP_URL}${endpoint}`, { method: "POST" }).catch(() => {});
   }, []);
 
-  const changeElinkPort = useCallback(async (newPort: string): Promise<{ ok: boolean; error?: string }> => {
+  const changeElinkPort = useCallback(async (ip: string, port?: number): Promise<{ ok: boolean; error?: string }> => {
     try {
       const res = await fetch(`${HTTP_URL}/config/elink`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ port: newPort }),
+        body: JSON.stringify({ ip, port }),
       });
       return await res.json();
     } catch (e) {

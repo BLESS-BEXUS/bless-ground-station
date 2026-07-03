@@ -6,6 +6,30 @@ import {
 } from "recharts";
 import CommandModal from "@/components/CommandModal";
 
+function EnvChart({ title, data, dataKey, color, unit, domain }: {
+  title: string;
+  data: { time: number }[];
+  dataKey: string;
+  color: string;
+  unit: string;
+  domain?: [number | string, number | string];
+}) {
+  return (
+    <div className="rounded-lg border border-border bg-card p-4">
+      <h3 className="font-mono text-sm text-muted-foreground mb-4 uppercase tracking-wider">{title}</h3>
+      <ResponsiveContainer width="100%" height={180}>
+        <LineChart data={data}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#28808D33" />
+          <XAxis dataKey="time" tick={{ fill: "#E1DFB4aa", fontSize: 11, fontFamily: "JetBrains Mono" }} tickFormatter={(v) => `${v}s`} />
+          <YAxis domain={domain} tick={{ fill: "#E1DFB4aa", fontSize: 11, fontFamily: "JetBrains Mono" }} />
+          <Tooltip contentStyle={{ background: "#183054", border: "1px solid #28808D", fontFamily: "JetBrains Mono", fontSize: 12, color: "#E1DFB4" }} labelFormatter={(v) => `T+${v}s`} formatter={(v: number) => [`${v} ${unit}`, title]} />
+          <Line type="monotone" dataKey={dataKey} stroke={color} strokeWidth={2} dot={false} isAnimationActive={false} />
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
 function StatusDot({ status }: { status: "nominal" | "warning" | "critical" }) {
   const cls =
     status === "nominal" ? "bg-success"
@@ -187,23 +211,12 @@ export default function ELinkPage() {
         </ResponsiveContainer>
       </div>
 
-      {/* Environmental chart */}
-      <div className="rounded-lg border border-border bg-card p-4">
-        <h3 className="font-mono text-sm text-muted-foreground mb-4 uppercase tracking-wider">Environmental / Radiation (E-Link)</h3>
-        <ResponsiveContainer width="100%" height={220}>
-          <LineChart data={d.envHistory}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#28808D33" />
-            <XAxis dataKey="time" tick={{ fill: "#E1DFB4aa", fontSize: 11, fontFamily: "JetBrains Mono" }} tickFormatter={(v) => `${v}s`} />
-            <YAxis yAxisId="temp" domain={[-60, 40]} tick={{ fill: "#E1DFB4aa", fontSize: 11, fontFamily: "JetBrains Mono" }} />
-            <YAxis yAxisId="rad" orientation="right" tick={{ fill: "#E1DFB4aa", fontSize: 11, fontFamily: "JetBrains Mono" }} />
-            <Tooltip contentStyle={{ background: "#183054", border: "1px solid #28808D", fontFamily: "JetBrains Mono", fontSize: 12, color: "#E1DFB4" }} labelFormatter={(v) => `T+${v}s`} />
-            <Legend wrapperStyle={{ fontFamily: "JetBrains Mono", fontSize: 11, color: "#E1DFB4aa" }} />
-            <Line yAxisId="temp" type="monotone" dataKey="intTempC" stroke="#28808D" strokeWidth={2} dot={false} name="Int. Temp (°C)" isAnimationActive={false} />
-            <Line yAxisId="temp" type="monotone" dataKey="extTempC" stroke="#6AB1A7" strokeWidth={2} dot={false} name="Ext. Temp (°C)" isAnimationActive={false} />
-            <Line yAxisId="temp" type="monotone" dataKey="extHumidityRh" stroke="#A5BB86" strokeWidth={2} dot={false} name="Ext. Humidity (%)" isAnimationActive={false} />
-            <Line yAxisId="rad" type="monotone" dataKey="radiationCps" stroke="#E1DFB4" strokeWidth={2} dot={false} name="Radiation (cps)" isAnimationActive={false} />
-          </LineChart>
-        </ResponsiveContainer>
+      {/* Environmental charts */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <EnvChart title="Int. Temperature (E-Link)" data={d.envHistory} dataKey="intTempC" color="#28808D" unit="°C" />
+        <EnvChart title="Ext. Temperature (E-Link)" data={d.envHistory} dataKey="extTempC" color="#6AB1A7" unit="°C" />
+        <EnvChart title="Ext. Humidity (E-Link)" data={d.envHistory} dataKey="extHumidityRh" color="#A5BB86" unit="%" domain={[0, 100]} />
+        <EnvChart title="Radiation (E-Link)" data={d.envHistory} dataKey="radiationCps" color="#E1DFB4" unit="cps" />
       </div>
 
       <CommandModal open={cmdOpen} onClose={() => setCmdOpen(false)} />
