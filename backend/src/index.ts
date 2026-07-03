@@ -17,7 +17,7 @@ const ETH_HEADER_SIZE = 14;
 
 const halowLogger = new MissionLogger(
   "./logs", "halow_live.csv",
-  "receivedAt,timestamp,packetCount,latitude,longitude,altitude,gpsFix,gpsSats," +
+  "receivedAt,timestamp,packetCount,latitude,longitude,altitude,gpsFix,gpsFixQuality,gpsSats," +
   "rssi,snr,freqDevHz,successRate,noiseFloor,txMcs," +
   "rfVoltMv,halowCurrMa,chipTempC,heaterPower," +
   "pressurePa,extTempC,intTempC,extHumidityRh,radiationCps,errorFlags,halowStatus," +
@@ -26,7 +26,7 @@ const halowLogger = new MissionLogger(
 );
 const elinkLogger = new MissionLogger(
   "./logs", "elink_live.csv",
-  "receivedAt,timestamp,packetCount,latitude,longitude,altitude,gpsFix,gpsSats," +
+  "receivedAt,timestamp,packetCount,latitude,longitude,altitude,gpsFix,gpsFixQuality,gpsSats," +
   "rssi,snr,freqDevHz,successRate,noiseFloor,txMcs," +
   "rfVoltMv,halowCurrMa,chipTempC,heaterPower," +
   "pressurePa,extTempC,intTempC,extHumidityRh,radiationCps,errorFlags,halowStatus\n",

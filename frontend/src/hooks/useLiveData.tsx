@@ -15,6 +15,7 @@ export interface TelemetryData {
   longitude: number;
   altitude: number;
   gpsFix: boolean;
+  gpsFixQuality: number; // 0=NO FIX, 1=3D FIX, 2=DGPS FIX, 3=RTK FIX
   gpsSats: number;
   // RF
   rssi: number;
@@ -43,6 +44,7 @@ export interface TelemetryData {
   // Derived history
   rssiHistory: { time: number; rssi: number; snr: number }[];
   trajectoryHistory: { lat: number; lng: number; alt: number }[];
+  envHistory: { time: number; radiationCps: number; intTempC: number; extTempC: number; extHumidityRh: number }[];
 }
 
 export interface ConnectionState {
@@ -101,6 +103,10 @@ function buildSimTick(prev: TelemetryData, tick: number): TelemetryData {
   const newRssi = baseRssi + (Math.random() - 0.5) * 20;
   const newSnr = 20 + (Math.random() - 0.5) * 10;
   const extTemp = Math.max(-60, Math.min(20, prev.extTempC + (phase === "ascent" ? -2 : phase === "descent" ? 2 : (Math.random() - 0.5))));
+  const newExtTempC = +extTemp.toFixed(2);
+  const newIntTempC = +(22 + (Math.random() - 0.5) * 2).toFixed(2);
+  const newExtHumidityRh = +(40 + Math.random() * 10).toFixed(2);
+  const newRadiationCps = Math.round(2 + newAlt / 5000);
 
   return {
     ...prev,
@@ -108,6 +114,7 @@ function buildSimTick(prev: TelemetryData, tick: number): TelemetryData {
     longitude: newLng,
     altitude: newAlt,
     gpsFix: true,
+    gpsFixQuality: 1,
     gpsSats: 8 + Math.floor(Math.random() * 4),
     rssi: newRssi,
     snr: newSnr,
@@ -121,16 +128,23 @@ function buildSimTick(prev: TelemetryData, tick: number): TelemetryData {
     chipTempC: +(22 + (Math.random() - 0.5) * 2).toFixed(2),
     heaterPower: phase === "ascent" || phase === "float" ? Math.round(50 + Math.random() * 50) : 0,
     pressurePa: Math.round(101325 * Math.exp(-newAlt / 8500)),
-    extTempC: +extTemp.toFixed(2),
-    intTempC: +(22 + (Math.random() - 0.5) * 2).toFixed(2),
-    extHumidityRh: +(40 + Math.random() * 10).toFixed(2),
-    radiationCps: Math.round(2 + newAlt / 5000),
+    extTempC: newExtTempC,
+    intTempC: newIntTempC,
+    extHumidityRh: newExtHumidityRh,
+    radiationCps: newRadiationCps,
     timestamp: elapsed * 1000,
     packetCount: prev.packetCount + 1,
     errorFlags: 0,
     receivedAt: new Date().toISOString(),
     rssiHistory: [...prev.rssiHistory, { time: elapsed, rssi: newRssi, snr: newSnr }].slice(-60),
     trajectoryHistory: [...prev.trajectoryHistory, { lat: newLat, lng: newLng, alt: newAlt }],
+    envHistory: [...prev.envHistory, {
+      time: elapsed,
+      radiationCps: newRadiationCps,
+      intTempC: newIntTempC,
+      extTempC: newExtTempC,
+      extHumidityRh: newExtHumidityRh,
+    }].slice(-60),
   };
 }
 
@@ -139,6 +153,7 @@ const INITIAL_TELEMETRY: TelemetryData = {
   longitude: GROUND_STATION.lng + 0.05,
   altitude: 0,
   gpsFix: false,
+  gpsFixQuality: 0,
   gpsSats: 0,
   rssi: -55,
   snr: 25,
@@ -162,6 +177,7 @@ const INITIAL_TELEMETRY: TelemetryData = {
   receivedAt: new Date().toISOString(),
   rssiHistory: [],
   trajectoryHistory: [{ lat: GROUND_STATION.lat + 0.05, lng: GROUND_STATION.lng + 0.05, alt: 0 }],
+  envHistory: [],
 };
 
 // ─── Provider ─────────────────────────────────────────────────────────────────
@@ -250,6 +266,13 @@ export function LiveDataProvider({ children }: { children: React.ReactNode }) {
               ...d,
               rssiHistory: [...(jump ? [] : prev.rssiHistory), { time: d.timestamp / 1000, rssi: d.rssi, snr: d.snr }].slice(-60),
               trajectoryHistory: [...(jump ? [] : prev.trajectoryHistory), { lat: d.latitude, lng: d.longitude, alt: d.altitude }],
+              envHistory: [...(jump ? [] : prev.envHistory), {
+                time: d.timestamp / 1000,
+                radiationCps: d.radiationCps,
+                intTempC: d.intTempC,
+                extTempC: d.extTempC,
+                extHumidityRh: d.extHumidityRh,
+              }].slice(-60),
             };
           });
         }
@@ -261,10 +284,18 @@ export function LiveDataProvider({ children }: { children: React.ReactNode }) {
             const jump = lastPt && (Math.abs(lastPt.lat - d.latitude) > 1 || Math.abs(lastPt.lng - d.longitude) > 1);
             const baseTrajectory = jump ? [] : prev.trajectoryHistory;
             const baseRssi = jump ? [] : prev.rssiHistory;
+            const baseEnv = jump ? [] : prev.envHistory;
             return {
               ...d,
               rssiHistory: [...baseRssi, { time: d.timestamp / 1000, rssi: d.rssi, snr: d.snr }].slice(-60),
               trajectoryHistory: [...baseTrajectory, { lat: d.latitude, lng: d.longitude, alt: d.altitude }],
+              envHistory: [...baseEnv, {
+                time: d.timestamp / 1000,
+                radiationCps: d.radiationCps,
+                intTempC: d.intTempC,
+                extTempC: d.extTempC,
+                extHumidityRh: d.extHumidityRh,
+              }].slice(-60),
             };
           });
         }

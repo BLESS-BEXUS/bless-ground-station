@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { NavLink } from "react-router-dom";
+import { NavLink, useNavigate } from "react-router-dom";
 import { useLiveData } from "@/hooks/useLiveData";
 import SettingsModal from "./SettingsModal";
 
@@ -11,6 +11,7 @@ const navItems = [
 ];
 
 export default function TopNav() {
+  const navigate = useNavigate();
   const { telemetry, connection, logging, toggleLogging } = useLiveData();
   const [settingsOpen, setSettingsOpen] = useState(false);
 
@@ -24,12 +25,12 @@ export default function TopNav() {
     <>
       <nav className="flex items-center justify-between border-b border-border bg-card px-6 py-3 gap-4">
         {/* Logo */}
-        <div className="flex items-center gap-3 shrink-0">
+        <button onClick={() => navigate("/")} className="flex items-center gap-3 shrink-0 hover:opacity-80 transition-opacity">
           <div className="h-3 w-3 rounded-full bg-primary animate-pulse-glow" />
           <span className="font-mono text-lg font-bold text-primary text-glow-primary tracking-wider">
             BLESS Mission Control
           </span>
-        </div>
+        </button>
 
         <div className="flex items-center gap-4">
           {/* Nav links */}

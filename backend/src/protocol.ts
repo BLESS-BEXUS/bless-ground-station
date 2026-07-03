@@ -51,6 +51,7 @@ export interface BlessPacket {
   altitude: number;
   gpsFix: boolean;
   gpsSats: number;
+  gpsFixQuality: number; // 0=NO FIX, 1=3D FIX, 2=DGPS FIX, 3=RTK FIX
   // RF
   rssi: number;
   snr: number;
@@ -106,7 +107,9 @@ export function parsePacket(buf: Buffer): BlessPacket | null {
     console.warn(`[parser] CRC mismatch: got 0x${checksum.toString(16)}, expected 0x${computed.toString(16)} (accepting anyway)`);
   }
 
-  const fixSats = buf.readInt8(20);
+  const fixSats = buf.readUInt8(20);
+  const gpsSats = fixSats & 0x3f;         // bits 0-5
+  const gpsFixQuality = (fixSats >> 6) & 0x03; // bits 6-7
 
   const rssi = buf.readInt16LE(21);
   const halowStatus =
@@ -118,8 +121,9 @@ export function parsePacket(buf: Buffer): BlessPacket | null {
     latitude: buf.readInt32LE(10) / 1e7,
     longitude: buf.readInt32LE(14) / 1e7,
     altitude: buf.readInt16LE(18),
-    gpsFix: (fixSats & 0x80) !== 0,
-    gpsSats: fixSats & 0x7f,
+    gpsFix: gpsFixQuality !== 0,
+    gpsSats,
+    gpsFixQuality,
     rssi,
     snr: buf.readInt8(23),
     freqDevHz: buf.readInt16LE(24),
@@ -128,7 +132,7 @@ export function parsePacket(buf: Buffer): BlessPacket | null {
     txMcs: buf.readUInt8(29),
     rfVoltMv: buf.readUInt16LE(30),
     halowCurrMa: buf.readUInt16LE(32),
-    chipTempC: buf.readInt16LE(34) / 100,
+    chipTempC: buf.readInt16LE(34),
     heaterPower: buf.readUInt16LE(36),
     pressurePa: buf.readUInt32LE(38),
     extTempC: buf.readInt16LE(42) / 100,

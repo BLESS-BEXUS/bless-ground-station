@@ -3,14 +3,14 @@ import path from "path";
 import type { BlessPacket } from "./protocol";
 
 const HALOW_HEADER =
-  "receivedAt,timestamp,packetCount,latitude,longitude,altitude,gpsFix,gpsSats," +
+  "receivedAt,timestamp,packetCount,latitude,longitude,altitude,gpsFix,gpsFixQuality,gpsSats," +
   "rssi,snr,freqDevHz,successRate,noiseFloor,txMcs," +
   "rfVoltMv,halowCurrMa,chipTempC,heaterPower," +
   "pressurePa,extTempC,intTempC,extHumidityRh,radiationCps,errorFlags,halowStatus," +
   "gsRssi,gsSnr,gsFreqDev,gsMcs\n";
 
 const ELINK_HEADER =
-  "receivedAt,timestamp,packetCount,latitude,longitude,altitude,gpsFix,gpsSats," +
+  "receivedAt,timestamp,packetCount,latitude,longitude,altitude,gpsFix,gpsFixQuality,gpsSats," +
   "rssi,snr,freqDevHz,successRate,noiseFloor,txMcs," +
   "rfVoltMv,halowCurrMa,chipTempC,heaterPower," +
   "pressurePa,extTempC,intTempC,extHumidityRh,radiationCps,errorFlags,halowStatus\n";
@@ -24,6 +24,7 @@ function packetToRow(p: BlessPacket, includeGs = false): string {
     p.longitude.toFixed(7),
     p.altitude,
     p.gpsFix ? 1 : 0,
+    p.gpsFixQuality,
     p.gpsSats,
     p.rssi,
     p.snr,

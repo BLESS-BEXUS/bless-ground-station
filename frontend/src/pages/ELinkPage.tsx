@@ -54,6 +54,8 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
+const GPS_FIX_LABELS = ["NO FIX", "3D FIX", "DGPS FIX", "RTK FIX"];
+
 export default function ELinkPage() {
   const { elinkTelemetry: d, connection } = useLiveData();
   const [cmdOpen, setCmdOpen] = useState(false);
@@ -153,7 +155,9 @@ export default function ELinkPage() {
         <div className="rounded-lg border border-border bg-card px-4 py-3 flex items-center gap-3">
           <div className={`h-2.5 w-2.5 rounded-full ${d.gpsFix ? "bg-success" : "bg-destructive"}`} />
           <span className="font-mono text-xs text-muted-foreground">GPS Fix</span>
-          <span className="font-mono text-sm text-foreground">{d.gpsFix ? `YES (${d.gpsSats} sats)` : "NO FIX"}</span>
+          <span className="font-mono text-sm text-foreground">
+            {GPS_FIX_LABELS[d.gpsFixQuality] ?? "UNKNOWN"} ({d.gpsSats} sats)
+          </span>
         </div>
         <div className="rounded-lg border border-border bg-card px-4 py-3 flex items-center gap-3">
           <span className="font-mono text-xs text-muted-foreground">Packets RX</span>
@@ -177,8 +181,27 @@ export default function ELinkPage() {
             <YAxis yAxisId="snr" orientation="right" domain={[0, 40]} tick={{ fill: "#E1DFB4aa", fontSize: 11, fontFamily: "JetBrains Mono" }} />
             <Tooltip contentStyle={{ background: "#183054", border: "1px solid #28808D", fontFamily: "JetBrains Mono", fontSize: 12, color: "#E1DFB4" }} labelFormatter={(v) => `T+${v}s`} />
             <Legend wrapperStyle={{ fontFamily: "JetBrains Mono", fontSize: 11, color: "#E1DFB4aa" }} />
-            <Line yAxisId="rssi" type="monotone" dataKey="rssi" stroke="#28808D" strokeWidth={2} dot={false} name="RSSI (dBm)" />
-            <Line yAxisId="snr" type="monotone" dataKey="snr" stroke="#A5BB86" strokeWidth={2} dot={false} name="SNR (dB)" />
+            <Line yAxisId="rssi" type="monotone" dataKey="rssi" stroke="#28808D" strokeWidth={2} dot={false} name="RSSI (dBm)" isAnimationActive={false} />
+            <Line yAxisId="snr" type="monotone" dataKey="snr" stroke="#A5BB86" strokeWidth={2} dot={false} name="SNR (dB)" isAnimationActive={false} />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+
+      {/* Environmental chart */}
+      <div className="rounded-lg border border-border bg-card p-4">
+        <h3 className="font-mono text-sm text-muted-foreground mb-4 uppercase tracking-wider">Environmental / Radiation (E-Link)</h3>
+        <ResponsiveContainer width="100%" height={220}>
+          <LineChart data={d.envHistory}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#28808D33" />
+            <XAxis dataKey="time" tick={{ fill: "#E1DFB4aa", fontSize: 11, fontFamily: "JetBrains Mono" }} tickFormatter={(v) => `${v}s`} />
+            <YAxis yAxisId="temp" domain={[-60, 40]} tick={{ fill: "#E1DFB4aa", fontSize: 11, fontFamily: "JetBrains Mono" }} />
+            <YAxis yAxisId="rad" orientation="right" tick={{ fill: "#E1DFB4aa", fontSize: 11, fontFamily: "JetBrains Mono" }} />
+            <Tooltip contentStyle={{ background: "#183054", border: "1px solid #28808D", fontFamily: "JetBrains Mono", fontSize: 12, color: "#E1DFB4" }} labelFormatter={(v) => `T+${v}s`} />
+            <Legend wrapperStyle={{ fontFamily: "JetBrains Mono", fontSize: 11, color: "#E1DFB4aa" }} />
+            <Line yAxisId="temp" type="monotone" dataKey="intTempC" stroke="#28808D" strokeWidth={2} dot={false} name="Int. Temp (°C)" isAnimationActive={false} />
+            <Line yAxisId="temp" type="monotone" dataKey="extTempC" stroke="#6AB1A7" strokeWidth={2} dot={false} name="Ext. Temp (°C)" isAnimationActive={false} />
+            <Line yAxisId="temp" type="monotone" dataKey="extHumidityRh" stroke="#A5BB86" strokeWidth={2} dot={false} name="Ext. Humidity (%)" isAnimationActive={false} />
+            <Line yAxisId="rad" type="monotone" dataKey="radiationCps" stroke="#E1DFB4" strokeWidth={2} dot={false} name="Radiation (cps)" isAnimationActive={false} />
           </LineChart>
         </ResponsiveContainer>
       </div>
