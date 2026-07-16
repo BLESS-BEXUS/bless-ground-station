@@ -4,14 +4,14 @@
  * Binary layout (51 bytes, little-endian, __attribute__((packed))):
  *
  * Header
- *   SYNC          uint16   2   Fixed: 0xB1E5 (or 0xAA55 dev)
+ *   SYNC          uint16   2   Fixed: 0xBEEF (legacy: 0xB1E5 / 0xAA55)
  *   TIMESTAMP     uint32   4   ms since boot
  *   COUNT         uint32   4   sequential counter
  * GNSS
  *   GPS_LAT       int32    4   decimal degrees × 1e7
  *   GPS_LON       int32    4   decimal degrees × 1e7
- *   GPS_ALT       int16    2   meters ASL
- *   GPS_FIX_SATS  int8     1   bit7=fix, bits0-6=num_sats
+ *   GPS_ALT       uint16   2   meters ASL (unsigned)
+ *   GPS_FIX_SATS  int8     1   bits6-7=fix quality, bits0-5=num_sats
  * RF Performance
  *   RF_RSSI       int16    2   dBm
  *   RF_SNR        int8     1   dB
@@ -37,8 +37,9 @@
  * Total: 53 bytes
  */
 
-export const SYNC_MARKER = 0xb1e5;
-export const SYNC_MARKER_ALT = 0xaa55;
+export const SYNC_MARKER = 0xbeef;
+export const SYNC_MARKER_LEGACY_1 = 0xb1e5;
+export const SYNC_MARKER_LEGACY_2 = 0xaa55;
 export const PACKET_SIZE = 53;
 
 export interface BlessPacket {
@@ -98,7 +99,7 @@ export function parsePacket(buf: Buffer): BlessPacket | null {
   if (buf.length < PACKET_SIZE) return null;
 
   const sync = buf.readUInt16LE(0);
-  if (sync !== SYNC_MARKER && sync !== SYNC_MARKER_ALT) return null;
+  if (sync !== SYNC_MARKER && sync !== SYNC_MARKER_LEGACY_1 && sync !== SYNC_MARKER_LEGACY_2) return null;
 
   const checksum = buf.readUInt16LE(51);
   const computed = crc16(buf, 51);
@@ -120,7 +121,7 @@ export function parsePacket(buf: Buffer): BlessPacket | null {
     packetCount: buf.readUInt32LE(6),
     latitude: buf.readInt32LE(10) / 1e7,
     longitude: buf.readInt32LE(14) / 1e7,
-    altitude: buf.readInt16LE(18),
+    altitude: buf.readUInt16LE(18),
     gpsFix: gpsFixQuality !== 0,
     gpsSats,
     gpsFixQuality,

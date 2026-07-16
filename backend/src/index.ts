@@ -14,7 +14,8 @@ const BAUD_RATE = 115200;
 const ETH_HEADER_SIZE = 14;
 
 // E-Link is now a real network device (W5500, IP + MAC) — talk to it over UDP, not serial
-const ELINK_LOCAL_PORT = Number(process.env.ELINK_LOCAL_PORT ?? 6001);
+// Flight segment sends telemetry as a constant UDP stream (1 Hz) to this GS-side port
+const ELINK_LOCAL_PORT = Number(process.env.ELINK_LOCAL_PORT ?? 5000);
 let elinkRemoteIp = process.env.ELINK_REMOTE_IP ?? "10.86.110.200";
 let elinkRemotePort = Number(process.env.ELINK_REMOTE_PORT ?? 5000);
 
