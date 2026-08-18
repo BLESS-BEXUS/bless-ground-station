@@ -106,8 +106,8 @@ export default function TelemetryPage() {
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
           <TelemetryCard label="RF Volt" value={sim.rfVoltMv} unit="mV" decimals={0} />
           <TelemetryCard label="HaLow I" value={sim.halowCurrMa} unit="mA" decimals={0} />
-          <TelemetryCard label="Chip Temp" value={sim.chipTempC} unit="°C" />
-          <TelemetryCard label="Heater" value={sim.heaterPower} unit="" decimals={0} />
+          <TelemetryCard label="Chip Temp" value={sim.chipTempC} unit="°C" decimals={0} />
+          <TelemetryCard label="Heater" value={sim.heaterPower} unit="%" decimals={2} />
           <TelemetryCard label="Pressure" value={sim.pressurePa} unit="Pa" decimals={0} />
           <TelemetryCard label="Radiation" value={sim.radiationCps} unit="cps" decimals={0} />
         </div>

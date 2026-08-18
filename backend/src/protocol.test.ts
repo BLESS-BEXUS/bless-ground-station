@@ -1,0 +1,66 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { PACKET_SIZE, parsePacket, SYNC_MARKER } from "./protocol";
+
+function crc16(buf: Buffer, length: number): number {
+  let crc = 0xffff;
+  for (let i = 0; i < length; i++) {
+    crc ^= buf[i];
+    for (let bit = 0; bit < 8; bit++) {
+      crc = (crc & 1) !== 0 ? (crc >> 1) ^ 0xa001 : crc >> 1;
+    }
+  }
+  return crc;
+}
+
+function makePacket(pressurePa: number): Buffer {
+  const buf = Buffer.alloc(PACKET_SIZE);
+  buf.writeUInt16LE(SYNC_MARKER, 0);
+  buf.writeUInt32LE(12_345, 2);
+  buf.writeUInt32LE(27, 6);
+  buf.writeInt32LE(678_856_000, 10);
+  buf.writeInt32LE(210_786_000, 14);
+  buf.writeUInt16LE(40_000, 18);
+  buf.writeUInt8((1 << 6) | 12, 20);
+  buf.writeInt16LE(-63, 21);
+  buf.writeInt8(18, 23);
+  buf.writeInt16LE(120, 24);
+  buf.writeUInt8(98, 26);
+  buf.writeInt16LE(-81, 27);
+  buf.writeUInt8(3, 29);
+  buf.writeUInt16LE(1_500, 30);
+  buf.writeUInt16LE(125, 32);
+  buf.writeInt16LE(47, 34);
+  buf.writeUInt16LE(5_250, 36);
+  buf.writeUInt32LE(pressurePa, 38);
+  buf.writeInt16LE(-1_250, 42);
+  buf.writeInt16LE(2_175, 44);
+  buf.writeUInt16LE(4_550, 46);
+  buf.writeUInt16LE(8, 48);
+  buf.writeUInt8(0, 50);
+  buf.writeUInt16LE(crc16(buf, 51), 51);
+  return buf;
+}
+
+test("decodes the packed flight telemetry units and bit fields", () => {
+  const packet = parsePacket(makePacket(98_765));
+
+  assert.ok(packet);
+  assert.equal(packet.chipTempC, 47);
+  assert.equal(packet.pressurePa, 98_765);
+  assert.equal(packet.heaterPower, 52.5);
+  assert.equal(packet.altitude, 40_000);
+  assert.equal(packet.gpsFix, true);
+  assert.equal(packet.gpsSats, 12);
+});
+
+test("uses the pressure value from every newly received packet", () => {
+  const first = parsePacket(makePacket(101_325));
+  const second = parsePacket(makePacket(75_000));
+
+  assert.ok(first);
+  assert.ok(second);
+  assert.equal(first.pressurePa, 101_325);
+  assert.equal(second.pressurePa, 75_000);
+  assert.notEqual(first.pressurePa, second.pressurePa);
+});

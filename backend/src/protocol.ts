@@ -1,7 +1,7 @@
 /**
  * BLESS downlink packet parser — BX38_BLESS_SED
  *
- * Binary layout (51 bytes, little-endian, __attribute__((packed))):
+ * Binary layout (53 bytes, little-endian, __attribute__((packed))):
  *
  * Header
  *   SYNC          uint16   2   Fixed: 0xB1E5 (or 0xAA55 dev)
@@ -10,8 +10,8 @@
  * GNSS
  *   GPS_LAT       int32    4   decimal degrees × 1e7
  *   GPS_LON       int32    4   decimal degrees × 1e7
- *   GPS_ALT       int16    2   meters ASL
- *   GPS_FIX_SATS  int8     1   bit7=fix, bits0-6=num_sats
+ *   GPS_ALT       uint16   2   meters ASL
+ *   GPS_FIX_SATS  int8     1   bits7-6=fix quality, bits5-0=num_sats
  * RF Performance
  *   RF_RSSI       int16    2   dBm
  *   RF_SNR        int8     1   dB
@@ -22,8 +22,8 @@
  *   RF_VOLT       uint16   2   RF Log Detector mV
  * Hardware
  *   HALOW_CURR    uint16   2   mA (INA219)
- *   TEMP_CHIP     int16    2   centi-°C
- *   HEATER_POWER  uint16   2   heater duty / power
+ *   TEMP_CHIP     int16    2   whole °C (T-HaLow module statistic)
+ *   HEATER_POWER  uint16   2   centi-% heater duty
  * Environment
  *   ENV_PRESS     uint32   4   Pa
  *   EXT_TEMP      int16    2   centi-°C
@@ -106,7 +106,8 @@ export function parsePacket(buf: Buffer): BlessPacket | null {
     console.warn(`[parser] CRC mismatch: got 0x${checksum.toString(16)}, expected 0x${computed.toString(16)} (accepting anyway)`);
   }
 
-  const fixSats = buf.readInt8(20);
+  const fixSats = buf.readUInt8(20);
+  const fixQuality = fixSats >> 6;
 
   const rssi = buf.readInt16LE(21);
   const halowStatus =
@@ -117,9 +118,9 @@ export function parsePacket(buf: Buffer): BlessPacket | null {
     packetCount: buf.readUInt32LE(6),
     latitude: buf.readInt32LE(10) / 1e7,
     longitude: buf.readInt32LE(14) / 1e7,
-    altitude: buf.readInt16LE(18),
-    gpsFix: (fixSats & 0x80) !== 0,
-    gpsSats: fixSats & 0x7f,
+    altitude: buf.readUInt16LE(18),
+    gpsFix: fixQuality !== 0,
+    gpsSats: fixSats & 0x3f,
     rssi,
     snr: buf.readInt8(23),
     freqDevHz: buf.readInt16LE(24),
@@ -128,8 +129,8 @@ export function parsePacket(buf: Buffer): BlessPacket | null {
     txMcs: buf.readUInt8(29),
     rfVoltMv: buf.readUInt16LE(30),
     halowCurrMa: buf.readUInt16LE(32),
-    chipTempC: buf.readInt16LE(34) / 100,
-    heaterPower: buf.readUInt16LE(36),
+    chipTempC: buf.readInt16LE(34),
+    heaterPower: buf.readUInt16LE(36) / 100,
     pressurePa: buf.readUInt32LE(38),
     extTempC: buf.readInt16LE(42) / 100,
     intTempC: buf.readInt16LE(44) / 100,

@@ -141,8 +141,8 @@ export default function ELinkPage() {
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
           <TelemetryCard label="RF Volt"   value={d.rfVoltMv}      unit="mV"  decimals={0} />
           <TelemetryCard label="HaLow I"   value={d.halowCurrMa}  unit="mA"  decimals={0} />
-          <TelemetryCard label="Chip Temp" value={d.chipTempC}     unit="°C"  />
-          <TelemetryCard label="Heater"    value={d.heaterPower}   unit=""    decimals={0} />
+          <TelemetryCard label="Chip Temp" value={d.chipTempC}     unit="°C"  decimals={0} />
+          <TelemetryCard label="Heater"    value={d.heaterPower}   unit="%"   decimals={2} />
           <TelemetryCard label="Pressure"  value={d.pressurePa}    unit="Pa"  decimals={0} />
           <TelemetryCard label="Radiation" value={d.radiationCps}  unit="cps" decimals={0} />
         </div>

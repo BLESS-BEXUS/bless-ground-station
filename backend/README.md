@@ -32,17 +32,17 @@ Implements the BLESS downlink packet (Table 427, BX38_BLESS_SED_v2):
 | GPS_LAT | 4 | decimal degrees × 1e7 |
 | GPS_LON | 4 | decimal degrees × 1e7 |
 | GPS_ALT | 2 | meters ASL |
-| GPS_FIX_SATS | 1 | bit7=fix, bits0-6=sats |
+| GPS_FIX_SATS | 1 | bits7-6=fix quality, bits5-0=sats |
 | RF_RSSI | 2 | dBm |
 | RF_SNR | 1 | dBm |
 | RF_FREQ_DEV | 2 | Hz |
 | RF_SUCCESS_RATE | 1 | % PDR |
 | RF_NOISE_FLOOR | 2 | dBm |
 | RF_TX_MCS | 1 | MCS index |
-| HALOW_VOLT | 2 | mV |
+| RF_VOLT | 2 | mV |
 | HALOW_CURR | 2 | mA |
-| TEMP_CHIP | 2 | centi-°C |
-| MAIN_BUS_V | 2 | centi-V |
+| TEMP_CHIP | 2 | whole °C |
+| HEATER_POWER | 2 | centi-% |
 | ENV_PRESS | 4 | Pa |
 | EXT_TEMP | 2 | centi-°C |
 | INT_TEMP | 2 | centi-°C |
