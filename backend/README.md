@@ -12,6 +12,17 @@ HALOW_PORT=COM4 npm run dev
 
 Replace `COM4` with your actual serial port (check Device Manager → Ports).
 
+The E-Link command channel uses UDP. Its defaults match the flight firmware:
+
+```powershell
+$env:ELINK_REMOTE_HOST = "10.86.110.200"
+$env:ELINK_REMOTE_PORT = "5000"
+$env:ELINK_LOCAL_PORT = "5000"
+npm run dev
+```
+
+`ELINK_PING_TIMEOUT_MS` can be used to change the default 2000 ms timeout.
+
 ## Architecture
 
 ```
@@ -73,7 +84,14 @@ curl -X POST http://localhost:8765/cmd/SET_TX_POWER \
      -d '{"params":[14]}'
 ```
 
-Available commands: `SYS_RESET`, `SYS_ON`, `SYS_OFF`, `SYS_START`, `SYS_STOP`, `PING`, `HEAT_MANUAL`, `HEAT_AUTO`, `HALOW_CONNECT`, `SET_TX_POWER`, `SET_MCS_MODE`, `RF_SILENCE`, `SAVE_DATA`, `SEND_HALOW`, `SEND_ELINK`
+A successful ping waits for the matching binary PONG and returns its token and
+round-trip time:
+
+```json
+{ "ok": true, "cmd": "PING", "token": 4660, "rttMs": 12, "from": "10.86.110.200:5000" }
+```
+
+Available commands: `SYS_RESET`, `SYS_START`, `SYS_STOP`, `PING`, `HEAT_MANUAL`, `HEAT_AUTO`, `HALOW_CONNECT`, `SET_TX_POWER`, `SET_MCS_MODE`, `RF_SILENCE`, `SAVE_DATA`, `SEND_HALOW`, `SEND_ELINK`
 
 ## WebSocket messages
 

@@ -89,9 +89,9 @@ export default function ELinkPage() {
       <div className={`rounded-lg border ${linkBorder} bg-card p-4 flex items-center justify-between flex-wrap gap-4`}>
         <div className="flex items-center gap-3">
           <div className={`h-3 w-3 rounded-full ${linkBg} ${connection.elinkConnected ? "animate-pulse-glow" : ""}`} />
-          <span className="font-mono text-sm text-muted-foreground">E-Link Downlink</span>
+          <span className="font-mono text-sm text-muted-foreground">E-Link UDP</span>
           <span className={`font-mono text-lg font-bold ${linkColor}`}>
-            {connection.elinkConnected ? "CONNECTED" : "NO SIGNAL"}
+            {connection.elinkConnected ? "READY" : "NOT READY"}
           </span>
           {connection.elinkPort && connection.elinkPort !== "—" && (
             <span className="font-mono text-xs text-muted-foreground">{connection.elinkPort}</span>

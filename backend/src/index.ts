@@ -1,7 +1,15 @@
 import { SerialPort } from "serialport";
 import { WebSocketServer, WebSocket } from "ws";
 import http from "http";
-import { parsePacket, buildCommand, CMD, PACKET_SIZE } from "./protocol";
+import dgram from "node:dgram";
+import {
+  parsePacket,
+  parsePong,
+  buildCommand,
+  buildPingCommand,
+  CMD,
+  PACKET_SIZE,
+} from "./protocol";
 import type { CmdId } from "./protocol";
 import { MissionLogger } from "./logger";
 
@@ -12,6 +20,10 @@ let halowPort = process.env.HALOW_PORT ?? "COM3";
 let elinkPort = process.env.ELINK_PORT ?? "";
 const BAUD_RATE = 115200;
 const ETH_HEADER_SIZE = 14;
+const ELINK_REMOTE_HOST = process.env.ELINK_REMOTE_HOST ?? "10.86.110.200";
+const ELINK_REMOTE_PORT = Number(process.env.ELINK_REMOTE_PORT ?? 5000);
+const ELINK_LOCAL_PORT = Number(process.env.ELINK_LOCAL_PORT ?? 5000);
+const ELINK_PING_TIMEOUT_MS = Number(process.env.ELINK_PING_TIMEOUT_MS ?? 2000);
 
 // ─── Loggers ──────────────────────────────────────────────────────────────────
 
@@ -170,12 +182,7 @@ function processElinkData(): void {
     if (elinkBuf.length < PACKET_SIZE) return;
 
     const candidate = elinkBuf.slice(0, PACKET_SIZE);
-    const packet = parsePacket(candidate);
-    if (packet) {
-      elinkRxCount++;
-      elinkLogger.write(packet);
-      broadcast({ type: "elink_telemetry", data: packet });
-      console.log(`[elink] #${elinkRxCount} alt=${packet.altitude}m rssi=${packet.rssi}dBm`);
+    if (handleElinkTelemetry(candidate)) {
       elinkBuf = elinkBuf.slice(PACKET_SIZE);
     } else {
       elinkBuf = elinkBuf.slice(2);
@@ -191,7 +198,7 @@ function openElink(): void {
   elinkSerial.on("open", () => {
     elinkConnected = true;
     console.log("[elink] Port open");
-    broadcast({ type: "elink_connection", connected: true, port: elinkPort });
+    publishElinkConnection();
   });
   elinkSerial.on("data", (chunk: Buffer) => {
     elinkBuf = Buffer.concat([elinkBuf, chunk]);
@@ -200,12 +207,12 @@ function openElink(): void {
   elinkSerial.on("error", (err) => {
     console.error("[elink] Error:", err.message);
     elinkConnected = false;
-    broadcast({ type: "elink_connection", connected: false, error: err.message });
+    publishElinkConnection();
   });
   elinkSerial.on("close", () => {
     elinkConnected = false;
     console.warn("[elink] Port closed");
-    broadcast({ type: "elink_connection", connected: false, port: elinkPort });
+    publishElinkConnection();
     if (elinkAutoReconnect) setTimeout(openElink, 5000);
   });
 }
@@ -219,6 +226,136 @@ function closeElink(): Promise<void> {
   });
 }
 
+// ─── E-Link UDP ───────────────────────────────────────────────────────────────
+
+interface PingResult {
+  token: number;
+  rttMs: number;
+  from: string;
+}
+
+interface PendingPing {
+  sentAt: number;
+  timeout: NodeJS.Timeout;
+  resolve: (result: PingResult) => void;
+  reject: (error: Error) => void;
+}
+
+const elinkUdp = dgram.createSocket("udp4");
+const pendingPings = new Map<number, PendingPing>();
+let elinkUdpReady = false;
+let nextPingToken = Math.floor(Math.random() * 0x10000);
+
+function elinkEndpoint(): string {
+  return `${ELINK_REMOTE_HOST}:${ELINK_REMOTE_PORT} UDP`;
+}
+
+function publishElinkConnection(): void {
+  broadcast({
+    type: "elink_connection",
+    connected: elinkUdpReady || elinkConnected,
+    port: elinkUdpReady ? elinkEndpoint() : elinkPort,
+  });
+}
+
+function handlePong(frame: Buffer, source: string): boolean {
+  const pong = parsePong(frame);
+  if (!pong) return false;
+
+  const pending = pendingPings.get(pong.token);
+  if (!pending) {
+    console.warn(`[ping] Unexpected/stale PONG token=0x${pong.token.toString(16).padStart(4, "0")} from ${source}`);
+    return true;
+  }
+
+  clearTimeout(pending.timeout);
+  pendingPings.delete(pong.token);
+  const result: PingResult = {
+    token: pong.token,
+    rttMs: Date.now() - pending.sentAt,
+    from: source,
+  };
+  console.log(`[ping] PONG token=0x${pong.token.toString(16).padStart(4, "0")} rtt=${result.rttMs}ms from ${source}`);
+  broadcast({ type: "ping_result", ok: true, ...result });
+  pending.resolve(result);
+  return true;
+}
+
+function handleElinkTelemetry(frame: Buffer): boolean {
+  const packet = parsePacket(frame);
+  if (!packet) return false;
+
+  elinkRxCount++;
+  elinkLogger.write(packet);
+  broadcast({ type: "elink_telemetry", data: packet });
+  console.log(`[elink] #${elinkRxCount} alt=${packet.altitude}m rssi=${packet.rssi}dBm`);
+  return true;
+}
+
+function sendElinkFrame(frame: Buffer): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (!elinkUdpReady) {
+      reject(new Error("E-Link UDP socket is not ready"));
+      return;
+    }
+    elinkUdp.send(frame, ELINK_REMOTE_PORT, ELINK_REMOTE_HOST, (error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+}
+
+function sendPing(): Promise<PingResult> {
+  const token = nextPingToken;
+  nextPingToken = (nextPingToken + 1) & 0xffff;
+  const frame = buildPingCommand(token);
+
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      pendingPings.delete(token);
+      const error = new Error(`Ping timeout after ${ELINK_PING_TIMEOUT_MS} ms`);
+      broadcast({ type: "ping_result", ok: false, token, error: error.message });
+      reject(error);
+    }, ELINK_PING_TIMEOUT_MS);
+
+    pendingPings.set(token, { sentAt: Date.now(), timeout, resolve, reject });
+    sendElinkFrame(frame).catch((error: Error) => {
+      clearTimeout(timeout);
+      pendingPings.delete(token);
+      reject(error);
+    });
+  });
+}
+
+function openElinkUdp(): void {
+  elinkUdp.on("listening", () => {
+    elinkUdpReady = true;
+    const local = elinkUdp.address();
+    console.log(`[elink-udp] Listening on ${local.address}:${local.port}; payload=${elinkEndpoint()}`);
+    publishElinkConnection();
+  });
+
+  elinkUdp.on("message", (frame, remote) => {
+    const source = `${remote.address}:${remote.port}`;
+    if (handlePong(frame, source)) return;
+    if (frame.length >= PACKET_SIZE && handleElinkTelemetry(frame)) return;
+    console.warn(`[elink-udp] Ignored ${frame.length}B datagram from ${source}`);
+  });
+
+  elinkUdp.on("error", (error) => {
+    elinkUdpReady = false;
+    console.error("[elink-udp] Error:", error.message);
+    publishElinkConnection();
+  });
+
+  elinkUdp.on("close", () => {
+    elinkUdpReady = false;
+    publishElinkConnection();
+  });
+
+  elinkUdp.bind(ELINK_LOCAL_PORT);
+}
+
 // ─── WebSocket ────────────────────────────────────────────────────────────────
 
 const httpServer = http.createServer((req, res) => {
@@ -229,24 +366,33 @@ const httpServer = http.createServer((req, res) => {
     res.end(); return;
   }
 
-  // Send command via E-Link serial
+  // Send command through the E-Link UDP network.
   if (req.method === "POST" && req.url?.startsWith("/cmd/")) {
     const cmdName = req.url.slice(5).toUpperCase() as keyof typeof CMD;
     if (!(cmdName in CMD)) { res.writeHead(400, cors); res.end(JSON.stringify({ error: "Unknown command" })); return; }
     let body = "";
     req.on("data", (c) => (body += c));
-    req.on("end", () => {
-      const params: number[] = body ? (JSON.parse(body).params ?? []) : [];
-      const payload = Buffer.from(params);
-      const frame = buildCommand(CMD[cmdName] as CmdId, payload);
-      const target = elinkSerial?.isOpen ? elinkSerial : halowSerial?.isOpen ? halowSerial : null;
-      if (target) {
-        target.write(frame, (err) => {
-          if (err) { res.writeHead(500, cors); res.end(JSON.stringify({ error: err.message })); }
-          else { console.log(`[cmd] Sent ${cmdName}`); res.writeHead(200, cors); res.end(JSON.stringify({ ok: true, cmd: cmdName })); }
-        });
-      } else {
-        res.writeHead(503, cors); res.end(JSON.stringify({ error: "No serial port connected" }));
+    req.on("end", async () => {
+      try {
+        if (cmdName === "PING") {
+          const result = await sendPing();
+          res.writeHead(200, cors);
+          res.end(JSON.stringify({ ok: true, cmd: cmdName, ...result }));
+          return;
+        }
+
+        const params: number[] = body ? (JSON.parse(body).params ?? []) : [];
+        const payload = Buffer.from(params);
+        const frame = buildCommand(CMD[cmdName] as CmdId, payload);
+        await sendElinkFrame(frame);
+        console.log(`[cmd] Sent ${cmdName} to ${elinkEndpoint()}`);
+        res.writeHead(200, cors);
+        res.end(JSON.stringify({ ok: true, cmd: cmdName }));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const status = message.startsWith("Ping timeout") ? 504 : 503;
+        res.writeHead(status, cors);
+        res.end(JSON.stringify({ ok: false, error: message }));
       }
     }); return;
   }
@@ -255,7 +401,13 @@ const httpServer = http.createServer((req, res) => {
     res.writeHead(200, cors);
     res.end(JSON.stringify({
       halow: { connected: halowConnected, port: halowPort, packets: halowRxCount },
-      elink: { connected: elinkConnected, port: elinkPort, packets: elinkRxCount },
+      elink: {
+        connected: elinkUdpReady || elinkConnected,
+        endpoint: elinkEndpoint(),
+        localUdpPort: ELINK_LOCAL_PORT,
+        serialPort: elinkPort,
+        packets: elinkRxCount,
+      },
       logging: {
         active: halowLogger.isActive(),
         halowFile: halowLogger.getFilePath(),
@@ -339,7 +491,11 @@ function broadcast(msg: object): void {
 wss.on("connection", (ws) => {
   console.log("[ws] Client connected");
   ws.send(JSON.stringify({ type: "connection", serial: halowConnected, port: halowPort }));
-  ws.send(JSON.stringify({ type: "elink_connection", connected: elinkConnected, port: elinkPort }));
+  ws.send(JSON.stringify({
+    type: "elink_connection",
+    connected: elinkUdpReady || elinkConnected,
+    port: elinkUdpReady ? elinkEndpoint() : elinkPort,
+  }));
   ws.send(JSON.stringify({ type: "logging", active: halowLogger.isActive() }));
   ws.on("close", () => console.log("[ws] Client disconnected"));
 });
@@ -347,13 +503,14 @@ wss.on("connection", (ws) => {
 httpServer.listen(WS_PORT, () => {
   console.log(`[ws]   WebSocket server listening on ws://localhost:${WS_PORT}`);
   console.log(`[http] REST API on http://localhost:${WS_PORT}`);
-  console.log(`[info] HALOW_PORT=${halowPort}  ELINK_PORT=${elinkPort || "(not set)"}`);
+  console.log(`[info] HALOW_PORT=${halowPort}  ELINK_UDP=${elinkEndpoint()}`);
 });
 
 // ─── Start ────────────────────────────────────────────────────────────────────
 
 openHalow();
 openElink();
+openElinkUdp();
 
 process.on("SIGINT", () => {
   console.log("\n[info] Shutting down...");
@@ -361,5 +518,6 @@ process.on("SIGINT", () => {
   elinkLogger.close();
   halowSerial?.close();
   elinkSerial?.close();
+  elinkUdp.close();
   process.exit(0);
 });

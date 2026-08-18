@@ -54,6 +54,15 @@ export interface ConnectionState {
   elinkPort: string;
 }
 
+export interface CommandResult {
+  ok: boolean;
+  error?: string;
+  cmd?: string;
+  token?: number;
+  rttMs?: number;
+  from?: string;
+}
+
 // Ground station — set exact coordinates for the campaign
 export const GROUND_STATION = {
   lat: 67.8856,
@@ -70,7 +79,7 @@ interface LiveDataContextValue {
   connection: ConnectionState;
   logging: boolean;
   toggleLogging: () => Promise<void>;
-  sendCommand: (cmd: string, params?: number[]) => Promise<{ ok: boolean; error?: string }>;
+  sendCommand: (cmd: string, params?: number[]) => Promise<CommandResult>;
   changePort: (port: string) => Promise<{ ok: boolean; error?: string }>;
   changeElinkPort: (port: string) => Promise<{ ok: boolean; error?: string }>;
   listPorts: () => Promise<{ path: string; manufacturer: string }[]>;
@@ -292,7 +301,7 @@ export function LiveDataProvider({ children }: { children: React.ReactNode }) {
   }, [connectWs, startSim, stopSim]);
 
   const sendCommand = useCallback(
-    async (cmd: string, params: number[] = []): Promise<{ ok: boolean; error?: string }> => {
+    async (cmd: string, params: number[] = []): Promise<CommandResult> => {
       try {
         const res = await fetch(`${HTTP_URL}/cmd/${cmd}`, {
           method: "POST",

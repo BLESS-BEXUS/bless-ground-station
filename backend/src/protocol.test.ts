@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { PACKET_SIZE, parsePacket, SYNC_MARKER } from "./protocol";
+import {
+  buildPingCommand,
+  ELINK_COMMAND_SIZE,
+  ELINK_PONG_ID,
+  PACKET_SIZE,
+  parsePacket,
+  parsePong,
+  SYNC_MARKER,
+} from "./protocol";
 
 function crc16(buf: Buffer, length: number): number {
   let crc = 0xffff;
@@ -63,4 +71,26 @@ test("uses the pressure value from every newly received packet", () => {
   assert.equal(first.pressurePa, 101_325);
   assert.equal(second.pressurePa, 75_000);
   assert.notEqual(first.pressurePa, second.pressurePa);
+});
+
+test("builds the firmware-compatible binary ping command", () => {
+  const ping = buildPingCommand(0x1234);
+
+  assert.equal(ping.length, ELINK_COMMAND_SIZE);
+  assert.deepEqual(
+    [...ping],
+    [0x75, 0xe1, 0x45, 0xc2, 0x04, 0x02, 0x34, 0x12, 0xa9, 0x02],
+  );
+});
+
+test("parses a pong and rejects a corrupted checksum", () => {
+  const pong = buildPingCommand(0xbeef);
+  pong.writeUInt8(ELINK_PONG_ID, 4);
+  const checksum = [...pong.subarray(0, 8)].reduce((sum, byte) => (sum + byte) & 0xffff, 0);
+  pong.writeUInt16LE(checksum, 8);
+
+  assert.deepEqual(parsePong(pong), { token: 0xbeef });
+
+  pong[6] ^= 0x01;
+  assert.equal(parsePong(pong), null);
 });

@@ -150,11 +150,9 @@ export function parsePacket(buf: Buffer): BlessPacket | null {
  */
 export const CMD = {
   SYS_RESET: 0x01,
-  SYS_ON: 0x02,
-  SYS_OFF: 0x03,
-  SYS_START: 0x04,
-  SYS_STOP: 0x05,
-  PING: 0x06,
+  SYS_START: 0x02,
+  SYS_STOP: 0x03,
+  PING: 0x04,
   HEAT_MANUAL: 0x10,
   HEAT_AUTO: 0x11,
   HALOW_CONNECT: 0x20,
@@ -168,19 +166,50 @@ export const CMD = {
 
 export type CmdId = (typeof CMD)[keyof typeof CMD];
 
-const ELINK_CMD_SIZE = 10; // sync1(2) + sync2(2) + cmd_id(1) + payload_size(1) + payload[2] + checksum(2)
+export const ELINK_SYNC_1 = 0xe175;
+export const ELINK_SYNC_2 = 0xc245;
+export const ELINK_COMMAND_SIZE = 10;
+export const ELINK_PONG_ID = 0x84;
+
+export interface PongFrame {
+  token: number;
+}
+
+function commandChecksum(frame: Buffer): number {
+  let checksum = 0;
+  for (let i = 0; i < ELINK_COMMAND_SIZE - 2; i++) {
+    checksum = (checksum + frame[i]) & 0xffff;
+  }
+  return checksum;
+}
 
 export function buildCommand(cmdId: CmdId, payload: Buffer = Buffer.alloc(0)): Buffer {
-  const frame = Buffer.alloc(ELINK_CMD_SIZE);
+  const frame = Buffer.alloc(ELINK_COMMAND_SIZE);
 
-  frame.writeUInt16LE(0xe175, 0);
-  frame.writeUInt16LE(0xc245, 2);
+  frame.writeUInt16LE(ELINK_SYNC_1, 0);
+  frame.writeUInt16LE(ELINK_SYNC_2, 2);
   frame.writeUInt8(cmdId, 4);
   frame.writeUInt8(Math.min(payload.length, 2), 5);
   payload.copy(frame, 6, 0, Math.min(payload.length, 2));
 
-  const checksum = crc16(frame, 8);
-  frame.writeUInt16LE(checksum, 8);
+  frame.writeUInt16LE(commandChecksum(frame), 8);
 
   return frame;
+}
+
+export function buildPingCommand(token: number): Buffer {
+  const payload = Buffer.alloc(2);
+  payload.writeUInt16LE(token & 0xffff, 0);
+  return buildCommand(CMD.PING, payload);
+}
+
+export function parsePong(frame: Buffer): PongFrame | null {
+  if (frame.length !== ELINK_COMMAND_SIZE) return null;
+  if (frame.readUInt16LE(0) !== ELINK_SYNC_1) return null;
+  if (frame.readUInt16LE(2) !== ELINK_SYNC_2) return null;
+  if (frame.readUInt8(4) !== ELINK_PONG_ID) return null;
+  if (frame.readUInt8(5) !== 2) return null;
+  if (frame.readUInt16LE(8) !== commandChecksum(frame)) return null;
+
+  return { token: frame.readUInt16LE(6) };
 }

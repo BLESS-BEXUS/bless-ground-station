@@ -19,11 +19,9 @@ interface CommandDef {
 
 const COMMANDS: CommandDef[] = [
   // System
-  { label: "PING",       cmd: "PING",       description: "Comprueba que el payload responde" },
-  { label: "SYS ON",     cmd: "SYS_ON",     description: "Enciende e inicializa el experimento" },
+  { label: "PING",       cmd: "PING",       description: "Comprueba el enlace E-Link y mide el tiempo de ida y vuelta" },
   { label: "SYS START",  cmd: "SYS_START",  description: "Inicia operaciones del experimento" },
   { label: "SYS STOP",   cmd: "SYS_STOP",   description: "Detiene el experimento (MCU en idle)", danger: true },
-  { label: "SYS OFF",    cmd: "SYS_OFF",    description: "Apagado seguro del experimento", danger: true },
   { label: "SYS RESET",  cmd: "SYS_RESET",  description: "Reset del sistema", danger: true },
   // Heating
   {
@@ -63,7 +61,7 @@ export default function CommandModal({ open, onClose }: CommandModalProps) {
   const [lastResult, setLastResult] = useState<{ ok: boolean; msg: string } | null>(null);
   const [sending, setSending] = useState(false);
 
-  const disabled = connection.mode !== "live";
+  const disabled = !connection.wsConnected || !connection.elinkConnected;
 
   function openCmd(cmd: CommandDef) {
     setSelected(cmd);
@@ -78,9 +76,15 @@ export default function CommandModal({ open, onClose }: CommandModalProps) {
     setSending(true);
     const params = selected.params?.map((p) => Math.round(paramValues[p.name] ?? p.default)) ?? [];
     const res = await sendCommand(selected.cmd, params);
-    setLastResult({ ok: res.ok, msg: res.ok ? `${selected.label} enviado` : (res.error ?? "Error") });
+    const pingDetails = selected.cmd === "PING" && res.ok
+      ? `PONG · RTT ${res.rttMs} ms · token 0x${(res.token ?? 0).toString(16).padStart(4, "0")}`
+      : null;
+    setLastResult({
+      ok: res.ok,
+      msg: pingDetails ?? (res.ok ? `${selected.label} enviado` : (res.error ?? "Error")),
+    });
     setSending(false);
-    if (res.ok && !selected.params?.length) setSelected(null);
+    if (res.ok && selected.cmd !== "PING" && !selected.params?.length) setSelected(null);
   }
 
   if (!open) return null;
@@ -93,7 +97,7 @@ export default function CommandModal({ open, onClose }: CommandModalProps) {
           <div>
             <h2 className="font-mono text-base font-bold text-primary">E-Link Commands</h2>
             <p className="font-mono text-xs text-muted-foreground mt-0.5">
-              {disabled ? "Solo disponible en modo LIVE" : "Selecciona un comando para enviarlo al payload"}
+              {disabled ? "Backend o socket E-Link UDP no disponible" : "Selecciona un comando para enviarlo al payload"}
             </p>
           </div>
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground transition-colors font-mono text-lg">✕</button>
