@@ -30,13 +30,12 @@ const COMMANDS: CommandDef[] = [
   },
   {
     label: "HEAT AUTO", cmd: "HEAT_AUTO", description: "Control automático (PID) del calefactor",
-    params: [{ name: "Setpoint", unit: "°C", min: -40, max: 40, default: -10 }],
   },
   // RF / HaLow
   { label: "HaLow CONNECT", cmd: "HALOW_CONNECT", description: "Fuerza reconexión del módulo HaLow" },
   {
     label: "SET TX POWER", cmd: "SET_TX_POWER", description: "Configura la potencia de transmisión HaLow",
-    params: [{ name: "TX Power", unit: "dBm", min: 0, max: 20, default: 10 }],
+    params: [{ name: "TX Power", unit: "dBm", min: 0, max: 255, default: 10 }],
   },
   {
     label: "SET MCS MODE", cmd: "SET_MCS_MODE", description: "Configura el modo de modulación HaLow",
@@ -61,7 +60,7 @@ export default function CommandModal({ open, onClose }: CommandModalProps) {
   const [lastResult, setLastResult] = useState<{ ok: boolean; msg: string } | null>(null);
   const [sending, setSending] = useState(false);
 
-  const disabled = !connection.wsConnected || !connection.elinkConnected;
+  const disabled = !connection.wsConnected || !connection.elinkReady;
 
   function openCmd(cmd: CommandDef) {
     setSelected(cmd);

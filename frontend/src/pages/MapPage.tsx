@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { MapContainer, TileLayer, Marker, Polyline, Popup, useMap } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
-import { useLiveData, GROUND_STATION } from "@/hooks/useLiveData";
+import { useLiveData } from "@/hooks/useLiveData";
 
 function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6371;
@@ -42,15 +42,15 @@ function MapFollower({ lat, lng }: { lat: number; lng: number }) {
 }
 
 export default function MapPage() {
-  const { telemetry: sim } = useLiveData();
+  const { telemetry: sim, groundStation } = useLiveData();
 
-  const groundDist = haversineKm(sim.latitude, sim.longitude, GROUND_STATION.lat, GROUND_STATION.lng);
-  const slantDist = slantRangeKm(GROUND_STATION.lat, GROUND_STATION.lng, GROUND_STATION.alt, sim.latitude, sim.longitude, sim.altitude);
+  const groundDist = haversineKm(sim.latitude, sim.longitude, groundStation.lat, groundStation.lng);
+  const slantDist = slantRangeKm(groundStation.lat, groundStation.lng, groundStation.alt, sim.latitude, sim.longitude, sim.altitude);
 
   const trajectory: [number, number][] = sim.trajectoryHistory.map((p) => [p.lat, p.lng]);
   const losLine: [number, number][] = [
     [sim.latitude, sim.longitude],
-    [GROUND_STATION.lat, GROUND_STATION.lng],
+    [groundStation.lat, groundStation.lng],
   ];
 
   return (
@@ -69,10 +69,10 @@ export default function MapPage() {
 
         <div className="border-t border-border pt-4 space-y-3">
           <div className="text-xs font-mono text-muted-foreground uppercase tracking-wider">Ground Station</div>
-          <DataRow label="Location" value={GROUND_STATION.name} />
-          <DataRow label="Latitude" value={GROUND_STATION.lat.toFixed(6) + "°"} />
-          <DataRow label="Longitude" value={GROUND_STATION.lng.toFixed(6) + "°"} />
-          <DataRow label="Altitude" value={GROUND_STATION.alt + " m"} />
+          <DataRow label="Location" value={groundStation.name} />
+          <DataRow label="Latitude" value={groundStation.lat.toFixed(6) + "°"} />
+          <DataRow label="Longitude" value={groundStation.lng.toFixed(6) + "°"} />
+          <DataRow label="Altitude" value={groundStation.alt + " m"} />
         </div>
 
         <div className="border-t border-border pt-4 space-y-3">
@@ -103,8 +103,8 @@ export default function MapPage() {
               RSSI: {sim.rssi.toFixed(1)} dBm
             </Popup>
           </Marker>
-          <Marker position={[GROUND_STATION.lat, GROUND_STATION.lng]} icon={gsIcon}>
-            <Popup>{GROUND_STATION.name}</Popup>
+          <Marker position={[groundStation.lat, groundStation.lng]} icon={gsIcon}>
+            <Popup>{groundStation.name}</Popup>
           </Marker>
           <Polyline positions={trajectory} pathOptions={{ color: "#A5BB86", weight: 2, opacity: 0.7 }} />
           <Polyline positions={losLine} pathOptions={{ color: "#6AB1A7", weight: 1, dashArray: "8 4", opacity: 0.5 }} />

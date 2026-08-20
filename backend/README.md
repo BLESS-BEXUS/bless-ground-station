@@ -100,9 +100,18 @@ The frontend connects to `ws://localhost:8765`.
 **Server → client:**
 ```json
 { "type": "telemetry", "data": { ...BlessPacket } }
-{ "type": "connection", "serial": true, "port": "COM4" }
+{ "type": "elink_connection", "ready": true, "connected": true }
+{ "type": "link_health", "elinkFresh": true, "halowFresh": false }
+{ "type": "logging", "active": true }
 ```
 
 ## Logs
 
-Each session creates `./logs/bless_YYYY-MM-DDTHH-MM-SS.csv` with all received packets.
+Logging starts automatically with the backend. Each run creates two independent,
+session-stamped files in `./logs`: `halow_live_<session>.csv` and
+`elink_live_<session>.csv`. Rows are appended immediately so a process crash does
+not lose an in-memory batch.
+
+`GET /logs` lists the available CSV files and `GET /logs/<filename>` downloads a
+specific file. `POST /logging/start` starts a new paired session and
+`POST /logging/stop` pauses logging.

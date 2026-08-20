@@ -56,53 +56,49 @@ function packetToRow(p: BlessPacket, includeGs = false): string {
 
 export class MissionLogger {
   private logDir: string;
-  private filename: string;
+  private baseFilename: string;
   private filePath: string;
   private header: string;
-  private rows: string[] = [];
   private includeGs: boolean;
-  private timer: ReturnType<typeof setInterval> | null = null;
   private active = false;
+  private rowCount = 0;
 
   constructor(logDir = "./logs", filename: string, header: string, includeGs = false) {
     if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
     this.logDir = logDir;
-    this.filename = filename;
+    this.baseFilename = filename;
     this.filePath = path.join(logDir, filename);
     this.header = header;
     this.includeGs = includeGs;
   }
 
-  // Called once at startup — does NOT start logging automatically
   open(): void {
     console.log(`[logger] Ready — ${this.filePath} (logging OFF)`);
   }
 
-  start(): void {
+  start(sessionId = new Date().toISOString().replace(/[:.]/g, "-")): void {
     if (this.active) return;
+    const parsed = path.parse(this.baseFilename);
+    this.filePath = path.join(
+      this.logDir,
+      `${parsed.name}_${sessionId}${parsed.ext || ".csv"}`,
+    );
     this.active = true;
-    this.rows = [];
-    this.flush();
-    this.timer = setInterval(() => this.flush(), 30_000);
+    this.rowCount = 0;
+    fs.writeFileSync(this.filePath, this.header, "utf-8");
     console.log(`[logger] START — ${this.filePath}`);
   }
 
   stop(): void {
     if (!this.active) return;
     this.active = false;
-    if (this.timer) { clearInterval(this.timer); this.timer = null; }
-    this.flush();
-    console.log(`[logger] STOP — ${this.filePath} (${this.rows.length} rows saved)`);
+    console.log(`[logger] STOP — ${this.filePath} (${this.rowCount} rows saved)`);
   }
 
   write(p: BlessPacket): void {
     if (!this.active) return;
-    this.rows.push(packetToRow(p, this.includeGs));
-  }
-
-  private flush(): void {
-    const content = this.header + this.rows.join("\n") + (this.rows.length ? "\n" : "");
-    fs.writeFileSync(this.filePath, content, "utf-8");
+    fs.appendFileSync(this.filePath, packetToRow(p, this.includeGs) + "\n", "utf-8");
+    this.rowCount++;
   }
 
   close(): void {
@@ -111,5 +107,5 @@ export class MissionLogger {
 
   isActive(): boolean { return this.active; }
   getFilePath(): string { return this.filePath; }
-  getRowCount(): number { return this.rows.length; }
+  getRowCount(): number { return this.rowCount; }
 }

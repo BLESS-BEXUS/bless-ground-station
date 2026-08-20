@@ -5,6 +5,7 @@ import {
   ResponsiveContainer, Legend,
 } from "recharts";
 import CommandModal from "@/components/CommandModal";
+import { decodeTelemetryErrors } from "@/lib/telemetryErrors";
 
 function StatusDot({ status }: { status: "nominal" | "warning" | "critical" }) {
   const cls =
@@ -58,9 +59,9 @@ export default function ELinkPage() {
   const { elinkTelemetry: d, connection } = useLiveData();
   const [cmdOpen, setCmdOpen] = useState(false);
 
-  const linkColor = connection.elinkConnected ? "text-success" : "text-warning";
-  const linkBg = connection.elinkConnected ? "bg-success" : "bg-warning";
-  const linkBorder = connection.elinkConnected ? "border-success/30" : "border-warning/30";
+  const linkColor = connection.elinkConnected ? "text-success" : connection.elinkReady ? "text-warning" : "text-destructive";
+  const linkBg = connection.elinkConnected ? "bg-success" : connection.elinkReady ? "bg-warning" : "bg-destructive";
+  const linkBorder = connection.elinkConnected ? "border-success/30" : connection.elinkReady ? "border-warning/30" : "border-destructive/30";
 
   const halowColor =
     d.halowStatus === "ACTIVE" ? "text-success"
@@ -75,12 +76,7 @@ export default function ELinkPage() {
     : d.halowStatus === "DEGRADED" ? "border-warning/30"
     : "border-destructive/30";
 
-  const errorBits = d.errorFlags
-    ? Array.from({ length: 8 }, (_, i) => (d.errorFlags >> i) & 1)
-        .map((b, i) => (b ? `ERR[${i}]` : null))
-        .filter(Boolean)
-        .join(" ")
-    : null;
+  const errorBits = decodeTelemetryErrors(d.errorFlags);
 
   return (
     <div className="p-6 space-y-6 max-w-7xl mx-auto">
@@ -91,7 +87,7 @@ export default function ELinkPage() {
           <div className={`h-3 w-3 rounded-full ${linkBg} ${connection.elinkConnected ? "animate-pulse-glow" : ""}`} />
           <span className="font-mono text-sm text-muted-foreground">E-Link UDP</span>
           <span className={`font-mono text-lg font-bold ${linkColor}`}>
-            {connection.elinkConnected ? "READY" : "NOT READY"}
+            {connection.elinkConnected ? "PAYLOAD ONLINE" : connection.elinkReady ? "UDP READY · PAYLOAD OFFLINE" : "NOT READY"}
           </span>
           {connection.elinkPort && connection.elinkPort !== "—" && (
             <span className="font-mono text-xs text-muted-foreground">{connection.elinkPort}</span>

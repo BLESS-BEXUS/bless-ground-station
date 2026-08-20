@@ -112,8 +112,8 @@ export function parsePacket(buf: Buffer): BlessPacket | null {
   const checksum = buf.readUInt16LE(51);
   const computed = crc16(buf, 51);
   if (checksum !== computed) {
-    // Allow packets through with CRC warning during development
-    console.warn(`[parser] CRC mismatch: got 0x${checksum.toString(16)}, expected 0x${computed.toString(16)} (accepting anyway)`);
+    console.warn(`[parser] CRC mismatch: got 0x${checksum.toString(16)}, expected 0x${computed.toString(16)} (discarded)`);
+    return null;
   }
 
   const fixSats = buf.readUInt8(20);

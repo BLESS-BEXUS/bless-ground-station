@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useLiveData, GROUND_STATION } from "@/hooks/useLiveData";
+import { useLiveData } from "@/hooks/useLiveData";
 
 // ─── WGS84 / ECEF / LTC pointing computation ─────────────────────────────────
 // Implements the BEXUS User Manual Chapter 10 coordinate system.
@@ -170,16 +170,16 @@ function ElevationArc({ elevation }: { elevation: number }) {
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function AntennaPage() {
-  const { telemetry: sim } = useLiveData();
+  const { telemetry: sim, groundStation, setGroundStation } = useLiveData();
 
   // Configurable GS coordinates (default = GROUND_STATION constant)
-  const [gsLat, setGsLat] = useState(GROUND_STATION.lat.toString());
-  const [gsLon, setGsLon] = useState(GROUND_STATION.lng.toString());
-  const [gsAlt, setGsAlt] = useState(GROUND_STATION.alt.toString());
+  const [gsLat, setGsLat] = useState(groundStation.lat.toString());
+  const [gsLon, setGsLon] = useState(groundStation.lng.toString());
+  const [gsAlt, setGsAlt] = useState(groundStation.alt.toString());
 
-  const parsedLat = parseFloat(gsLat) || GROUND_STATION.lat;
-  const parsedLon = parseFloat(gsLon) || GROUND_STATION.lng;
-  const parsedAlt = parseFloat(gsAlt) || GROUND_STATION.alt;
+  const parsedLat = Number.isFinite(parseFloat(gsLat)) ? parseFloat(gsLat) : groundStation.lat;
+  const parsedLon = Number.isFinite(parseFloat(gsLon)) ? parseFloat(gsLon) : groundStation.lng;
+  const parsedAlt = Number.isFinite(parseFloat(gsAlt)) ? parseFloat(gsAlt) : groundStation.alt;
 
   const { azimuth, elevation, slantRangeKm } = computePointingLTC(
     parsedLat, parsedLon, parsedAlt,
@@ -241,16 +241,23 @@ export default function AntennaPage() {
         </h3>
         <div className="grid grid-cols-3 gap-4">
           {[
-            { label: "GS Latitude (°N)", val: gsLat, set: setGsLat, placeholder: "67.8856" },
-            { label: "GS Longitude (°E)", val: gsLon, set: setGsLon, placeholder: "21.0786" },
-            { label: "GS Altitude (m)", val: gsAlt, set: setGsAlt, placeholder: "310" },
-          ].map(({ label, val, set, placeholder }) => (
+            { label: "GS Latitude (°N)", val: gsLat, set: setGsLat, field: "lat" as const, placeholder: "67.8856" },
+            { label: "GS Longitude (°E)", val: gsLon, set: setGsLon, field: "lng" as const, placeholder: "21.0786" },
+            { label: "GS Altitude (m)", val: gsAlt, set: setGsAlt, field: "alt" as const, placeholder: "310" },
+          ].map(({ label, val, set, field, placeholder }) => (
             <div key={label} className="flex flex-col gap-1">
               <label className="font-mono text-xs text-muted-foreground">{label}</label>
               <input
                 type="number"
                 value={val}
-                onChange={(e) => set(e.target.value)}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  set(value);
+                  const parsed = Number(value);
+                  if (Number.isFinite(parsed)) {
+                    setGroundStation({ ...groundStation, [field]: parsed });
+                  }
+                }}
                 placeholder={placeholder}
                 className="bg-background border border-border rounded px-3 py-2 font-mono text-sm text-foreground focus:outline-none focus:border-primary/60"
                 step="0.0001"

@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
   buildPingCommand,
   ELINK_COMMAND_SIZE,
@@ -9,6 +12,7 @@ import {
   parsePong,
   SYNC_MARKER,
 } from "./protocol";
+import { MissionLogger } from "./logger";
 
 function crc16(buf: Buffer, length: number): number {
   let crc = 0xffff;
@@ -75,6 +79,13 @@ test("uses the pressure value from every newly received packet", () => {
   assert.notEqual(first.pressurePa, second.pressurePa);
 });
 
+test("rejects telemetry with a corrupted CRC", () => {
+  const corrupted = makePacket(101_325);
+  corrupted[42] ^= 0x01;
+
+  assert.equal(parsePacket(corrupted), null);
+});
+
 test("builds the firmware-compatible binary ping command", () => {
   const ping = buildPingCommand(0x1234);
 
@@ -95,4 +106,26 @@ test("parses a pong and rejects a corrupted checksum", () => {
 
   pong[6] ^= 0x01;
   assert.equal(parsePong(pong), null);
+});
+
+test("writes mission rows immediately to a session-specific file", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bless-logger-"));
+  try {
+    const packet = parsePacket(makePacket(101_325));
+    assert.ok(packet);
+
+    const logger = new MissionLogger(directory, "elink_live.csv", "header\n");
+    logger.open();
+    logger.start("test-session");
+    logger.write(packet);
+
+    const filePath = logger.getFilePath();
+    assert.equal(path.basename(filePath), "elink_live_test-session.csv");
+    const content = fs.readFileSync(filePath, "utf-8");
+    assert.ok(content.startsWith("header\n"));
+    assert.equal(content.trim().split("\n").length, 2);
+    logger.stop();
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 });

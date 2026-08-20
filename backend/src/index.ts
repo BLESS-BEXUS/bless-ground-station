@@ -2,6 +2,8 @@ import { SerialPort } from "serialport";
 import { WebSocketServer, WebSocket } from "ws";
 import http from "http";
 import dgram from "node:dgram";
+import fs from "node:fs";
+import path from "node:path";
 import {
   parsePacket,
   parsePong,
@@ -24,6 +26,7 @@ const ELINK_REMOTE_HOST = process.env.ELINK_REMOTE_HOST ?? "10.86.110.200";
 const ELINK_REMOTE_PORT = Number(process.env.ELINK_REMOTE_PORT ?? 5000);
 const ELINK_LOCAL_PORT = Number(process.env.ELINK_LOCAL_PORT ?? 5000);
 const ELINK_PING_TIMEOUT_MS = Number(process.env.ELINK_PING_TIMEOUT_MS ?? 2000);
+const LINK_FRESHNESS_MS = Number(process.env.LINK_FRESHNESS_MS ?? 5000);
 
 // ─── Loggers ──────────────────────────────────────────────────────────────────
 
@@ -46,6 +49,9 @@ const elinkLogger = new MissionLogger(
 );
 halowLogger.open();
 elinkLogger.open();
+const startupSessionId = new Date().toISOString().replace(/[:.]/g, "-");
+halowLogger.start(startupSessionId);
+elinkLogger.start(startupSessionId);
 
 // ─── GS RF stats (from T-HaLow rx0/tx0 ASCII lines) ─────────────────────────
 
@@ -77,6 +83,7 @@ let halowRxCount = 0;
 let halowBuf = Buffer.alloc(0);
 let halowPendingLen = 0;
 let halowAutoReconnect = true;
+let lastHalowPacketAt = 0;
 
 function processHalowData(): void {
   while (halowBuf.length > 0) {
@@ -93,6 +100,7 @@ function processHalowData(): void {
         const payload = rawFrame.slice(ETH_HEADER_SIZE);
         const packet = parsePacket(payload);
         if (packet) {
+          lastHalowPacketAt = Date.now();
           halowRxCount++;
           packet.gsRssi = gsRfStats.rssi;
           packet.gsSnr = gsRfStats.snr;
@@ -245,6 +253,11 @@ const elinkUdp = dgram.createSocket("udp4");
 const pendingPings = new Map<number, PendingPing>();
 let elinkUdpReady = false;
 let nextPingToken = Math.floor(Math.random() * 0x10000);
+let lastElinkActivityAt = 0;
+
+function elinkPayloadAlive(): boolean {
+  return (Date.now() - lastElinkActivityAt) <= LINK_FRESHNESS_MS;
+}
 
 function elinkEndpoint(): string {
   return `${ELINK_REMOTE_HOST}:${ELINK_REMOTE_PORT} UDP`;
@@ -253,7 +266,8 @@ function elinkEndpoint(): string {
 function publishElinkConnection(): void {
   broadcast({
     type: "elink_connection",
-    connected: elinkUdpReady || elinkConnected,
+    ready: elinkUdpReady || elinkConnected,
+    connected: elinkConnected || (elinkUdpReady && elinkPayloadAlive()),
     port: elinkUdpReady ? elinkEndpoint() : elinkPort,
   });
 }
@@ -263,6 +277,7 @@ function handlePong(frame: Buffer, source: string): boolean {
   if (!pong) return false;
 
   const pending = pendingPings.get(pong.token);
+  lastElinkActivityAt = Date.now();
   if (!pending) {
     console.warn(`[ping] Unexpected/stale PONG token=0x${pong.token.toString(16).padStart(4, "0")} from ${source}`);
     return true;
@@ -286,6 +301,7 @@ function handleElinkTelemetry(frame: Buffer): boolean {
   if (!packet) return false;
 
   elinkRxCount++;
+  lastElinkActivityAt = Date.now();
   elinkLogger.write(packet);
   broadcast({ type: "elink_telemetry", data: packet });
   console.log(`[elink] #${elinkRxCount} alt=${packet.altitude}m rssi=${packet.rssi}dBm`);
@@ -405,7 +421,8 @@ const httpServer = http.createServer((req, res) => {
     res.end(JSON.stringify({
       halow: { connected: halowConnected, port: halowPort, packets: halowRxCount },
       elink: {
-        connected: elinkUdpReady || elinkConnected,
+        ready: elinkUdpReady || elinkConnected,
+        connected: elinkConnected || (elinkUdpReady && elinkPayloadAlive()),
         endpoint: elinkEndpoint(),
         localUdpPort: ELINK_LOCAL_PORT,
         serialPort: elinkPort,
@@ -422,8 +439,9 @@ const httpServer = http.createServer((req, res) => {
   }
 
   if (req.method === "POST" && req.url === "/logging/start") {
-    halowLogger.start();
-    elinkLogger.start();
+    const sessionId = new Date().toISOString().replace(/[:.]/g, "-");
+    halowLogger.start(sessionId);
+    elinkLogger.start(sessionId);
     broadcast({ type: "logging", active: true });
     res.writeHead(200, cors);
     res.end(JSON.stringify({ ok: true, active: true }));
@@ -444,6 +462,32 @@ const httpServer = http.createServer((req, res) => {
       res.writeHead(200, cors);
       res.end(JSON.stringify(ports.map((p) => ({ path: p.path, manufacturer: p.manufacturer ?? "" }))));
     }).catch((err) => { res.writeHead(500); res.end(JSON.stringify({ error: err.message })); });
+    return;
+  }
+
+  if (req.method === "GET" && req.url === "/logs") {
+    const logDir = path.resolve("./logs");
+    const files = fs.existsSync(logDir)
+      ? fs.readdirSync(logDir).filter((name) => name.endsWith(".csv"))
+      : [];
+    res.writeHead(200, cors);
+    res.end(JSON.stringify(files));
+    return;
+  }
+
+  if (req.method === "GET" && req.url?.startsWith("/logs/")) {
+    const requested = path.basename(decodeURIComponent(req.url.slice(6)));
+    const filePath = path.resolve("./logs", requested);
+    const logRoot = path.resolve("./logs") + path.sep;
+    if (!filePath.startsWith(logRoot) || !fs.existsSync(filePath)) {
+      res.writeHead(404, cors); res.end(JSON.stringify({ error: "Log not found" })); return;
+    }
+    res.writeHead(200, {
+      "Access-Control-Allow-Origin": "*",
+      "Content-Type": "text/csv",
+      "Content-Disposition": `attachment; filename="${requested}"`,
+    });
+    fs.createReadStream(filePath).pipe(res);
     return;
   }
 
@@ -496,7 +540,8 @@ wss.on("connection", (ws) => {
   ws.send(JSON.stringify({ type: "connection", serial: halowConnected, port: halowPort }));
   ws.send(JSON.stringify({
     type: "elink_connection",
-    connected: elinkUdpReady || elinkConnected,
+    ready: elinkUdpReady || elinkConnected,
+    connected: elinkConnected || (elinkUdpReady && elinkPayloadAlive()),
     port: elinkUdpReady ? elinkEndpoint() : elinkPort,
   }));
   ws.send(JSON.stringify({ type: "logging", active: halowLogger.isActive() }));
@@ -514,6 +559,15 @@ httpServer.listen(WS_PORT, () => {
 openHalow();
 openElink();
 openElinkUdp();
+
+setInterval(() => {
+  publishElinkConnection();
+  broadcast({
+    type: "link_health",
+    elinkFresh: elinkPayloadAlive(),
+    halowFresh: (Date.now() - lastHalowPacketAt) <= LINK_FRESHNESS_MS,
+  });
+}, 1000);
 
 process.on("SIGINT", () => {
   console.log("\n[info] Shutting down...");

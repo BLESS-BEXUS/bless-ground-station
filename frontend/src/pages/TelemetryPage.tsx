@@ -1,4 +1,5 @@
 import { useLiveData } from "@/hooks/useLiveData";
+import { decodeTelemetryErrors } from "@/lib/telemetryErrors";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, Legend,
@@ -61,12 +62,7 @@ export default function TelemetryPage() {
     : sim.halowStatus === "DEGRADED" ? "border-warning/30"
     : "border-destructive/30";
 
-  const errorBits = sim.errorFlags
-    ? Array.from({ length: 8 }, (_, i) => (sim.errorFlags >> i) & 1)
-        .map((b, i) => (b ? `ERR[${i}]` : null))
-        .filter(Boolean)
-        .join(" ")
-    : null;
+  const errorBits = decodeTelemetryErrors(sim.errorFlags);
 
   return (
     <div className="p-6 space-y-6 max-w-7xl mx-auto">
