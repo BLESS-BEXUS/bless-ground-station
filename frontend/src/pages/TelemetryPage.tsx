@@ -104,7 +104,7 @@ export default function TelemetryPage() {
       <div>
         <h3 className="font-mono text-xs text-muted-foreground uppercase tracking-wider mb-3">Hardware / Power</h3>
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
-          <TelemetryCard label="RF Volt" value={sim.rfVoltMv} unit="mV" decimals={0} />
+          <TelemetryCard label="System State" value={sim.systemState} unit={sim.systemStateLabel} decimals={0} />
           <TelemetryCard label="HaLow I" value={sim.halowCurrMa} unit="mA" decimals={0} />
           <TelemetryCard label="Chip Temp" value={sim.chipTempC} unit="°C" decimals={0} />
           <TelemetryCard label="Heater" value={sim.heaterPower} unit="%" decimals={2} />

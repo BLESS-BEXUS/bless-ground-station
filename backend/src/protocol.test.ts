@@ -36,7 +36,7 @@ function makePacket(pressurePa: number): Buffer {
   buf.writeUInt8(98, 26);
   buf.writeInt16LE(-81, 27);
   buf.writeUInt8(3, 29);
-  buf.writeUInt16LE(1_500, 30);
+  buf.writeUInt16LE(2, 30);
   buf.writeUInt16LE(125, 32);
   buf.writeInt16LE(47, 34);
   buf.writeUInt16LE(5_250, 36);
@@ -60,6 +60,8 @@ test("decodes the packed flight telemetry units and bit fields", () => {
   assert.equal(packet.altitude, 40_000);
   assert.equal(packet.gpsFix, true);
   assert.equal(packet.gpsSats, 12);
+  assert.equal(packet.systemState, 2);
+  assert.equal(packet.systemStateLabel, "FLIGHT");
 });
 
 test("uses the pressure value from every newly received packet", () => {

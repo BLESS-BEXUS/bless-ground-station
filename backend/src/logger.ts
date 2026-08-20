@@ -5,14 +5,14 @@ import type { BlessPacket } from "./protocol";
 const HALOW_HEADER =
   "receivedAt,timestamp,packetCount,latitude,longitude,altitude,gpsFix,gpsSats," +
   "rssi,snr,freqDevHz,successRate,noiseFloor,txMcs," +
-  "rfVoltMv,halowCurrMa,chipTempC,heaterPower," +
+  "systemState,halowCurrMa,chipTempC,heaterPower," +
   "pressurePa,extTempC,intTempC,extHumidityRh,radiationCps,errorFlags,halowStatus," +
   "gsRssi,gsSnr,gsFreqDev,gsMcs\n";
 
 const ELINK_HEADER =
   "receivedAt,timestamp,packetCount,latitude,longitude,altitude,gpsFix,gpsSats," +
   "rssi,snr,freqDevHz,successRate,noiseFloor,txMcs," +
-  "rfVoltMv,halowCurrMa,chipTempC,heaterPower," +
+  "systemState,halowCurrMa,chipTempC,heaterPower," +
   "pressurePa,extTempC,intTempC,extHumidityRh,radiationCps,errorFlags,halowStatus\n";
 
 function packetToRow(p: BlessPacket, includeGs = false): string {
@@ -31,7 +31,7 @@ function packetToRow(p: BlessPacket, includeGs = false): string {
     p.successRate,
     p.noiseFloor,
     p.txMcs,
-    p.rfVoltMv,
+    p.systemState,
     p.halowCurrMa,
     p.chipTempC.toFixed(2),
     p.heaterPower,

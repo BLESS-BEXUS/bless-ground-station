@@ -31,7 +31,7 @@ const halowLogger = new MissionLogger(
   "./logs", "halow_live.csv",
   "receivedAt,timestamp,packetCount,latitude,longitude,altitude,gpsFix,gpsSats," +
   "rssi,snr,freqDevHz,successRate,noiseFloor,txMcs," +
-  "rfVoltMv,halowCurrMa,chipTempC,heaterPower," +
+  "systemState,halowCurrMa,chipTempC,heaterPower," +
   "pressurePa,extTempC,intTempC,extHumidityRh,radiationCps,errorFlags,halowStatus," +
   "gsRssi,gsSnr,gsFreqDev,gsMcs\n",
   true
@@ -40,7 +40,7 @@ const elinkLogger = new MissionLogger(
   "./logs", "elink_live.csv",
   "receivedAt,timestamp,packetCount,latitude,longitude,altitude,gpsFix,gpsSats," +
   "rssi,snr,freqDevHz,successRate,noiseFloor,txMcs," +
-  "rfVoltMv,halowCurrMa,chipTempC,heaterPower," +
+  "systemState,halowCurrMa,chipTempC,heaterPower," +
   "pressurePa,extTempC,intTempC,extHumidityRh,radiationCps,errorFlags,halowStatus\n",
   false
 );
@@ -300,7 +300,10 @@ function sendElinkFrame(frame: Buffer): Promise<void> {
     }
     elinkUdp.send(frame, ELINK_REMOTE_PORT, ELINK_REMOTE_HOST, (error) => {
       if (error) reject(error);
-      else resolve();
+      else {
+        console.log(`[elink-udp] TX ${frame.length}B to ${elinkEndpoint()}`);
+        resolve();
+      }
     });
   });
 }

@@ -19,7 +19,7 @@
  *   RF_SUCCESS_RATE uint8  1   % PDR
  *   RF_NOISE_FLOOR int16   2   dBm
  *   RF_TX_MCS     uint8    1   MCS index
- *   RF_VOLT       uint16   2   RF Log Detector mV
+ *   SYSTEM_STATE  uint16   2   0=INIT, 1=IDLE, 2=FLIGHT
  * Hardware
  *   HALOW_CURR    uint16   2   mA (INA219)
  *   TEMP_CHIP     int16    2   whole °C (T-HaLow module statistic)
@@ -41,6 +41,15 @@ export const SYNC_MARKER = 0xb1e5;
 export const SYNC_MARKER_ALT = 0xaa55;
 export const PACKET_SIZE = 53;
 
+export type SystemStateLabel = "INIT" | "IDLE" | "FLIGHT" | "UNKNOWN";
+
+function decodeSystemState(value: number): SystemStateLabel {
+  if (value === 0) return "INIT";
+  if (value === 1) return "IDLE";
+  if (value === 2) return "FLIGHT";
+  return "UNKNOWN";
+}
+
 export interface BlessPacket {
   // Header
   timestamp: number;
@@ -59,7 +68,8 @@ export interface BlessPacket {
   noiseFloor: number;
   txMcs: number;
   // Hardware
-  rfVoltMv: number;
+  systemState: number;
+  systemStateLabel: SystemStateLabel;
   halowCurrMa: number;
   chipTempC: number;
   heaterPower: number;
@@ -110,6 +120,7 @@ export function parsePacket(buf: Buffer): BlessPacket | null {
   const fixQuality = fixSats >> 6;
 
   const rssi = buf.readInt16LE(21);
+  const systemState = buf.readUInt16LE(30);
   const halowStatus =
     rssi > -70 ? "ACTIVE" : rssi > -85 ? "DEGRADED" : "INTERRUPTED";
 
@@ -127,7 +138,8 @@ export function parsePacket(buf: Buffer): BlessPacket | null {
     successRate: buf.readUInt8(26),
     noiseFloor: buf.readInt16LE(27),
     txMcs: buf.readUInt8(29),
-    rfVoltMv: buf.readUInt16LE(30),
+    systemState,
+    systemStateLabel: decodeSystemState(systemState),
     halowCurrMa: buf.readUInt16LE(32),
     chipTempC: buf.readInt16LE(34),
     heaterPower: buf.readUInt16LE(36) / 100,

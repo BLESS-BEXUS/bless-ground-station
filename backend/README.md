@@ -50,7 +50,7 @@ Implements the BLESS downlink packet (Table 427, BX38_BLESS_SED_v2):
 | RF_SUCCESS_RATE | 1 | % PDR |
 | RF_NOISE_FLOOR | 2 | dBm |
 | RF_TX_MCS | 1 | MCS index |
-| RF_VOLT | 2 | mV |
+| SYSTEM_STATE | 2 | `0=INIT`, `1=IDLE`, `2=FLIGHT` |
 | HALOW_CURR | 2 | mA |
 | TEMP_CHIP | 2 | whole °C |
 | HEATER_POWER | 2 | centi-% |

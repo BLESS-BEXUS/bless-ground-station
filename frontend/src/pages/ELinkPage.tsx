@@ -139,7 +139,7 @@ export default function ELinkPage() {
       <div>
         <h3 className="font-mono text-xs text-muted-foreground uppercase tracking-wider mb-3">Hardware / Power</h3>
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-          <TelemetryCard label="RF Volt"   value={d.rfVoltMv}      unit="mV"  decimals={0} />
+          <TelemetryCard label="System State" value={d.systemState} unit={d.systemStateLabel} decimals={0} />
           <TelemetryCard label="HaLow I"   value={d.halowCurrMa}  unit="mA"  decimals={0} />
           <TelemetryCard label="Chip Temp" value={d.chipTempC}     unit="°C"  decimals={0} />
           <TelemetryCard label="Heater"    value={d.heaterPower}   unit="%"   decimals={2} />

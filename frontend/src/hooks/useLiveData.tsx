@@ -25,7 +25,8 @@ export interface TelemetryData {
   txMcs: number;
   halowStatus: "ACTIVE" | "DEGRADED" | "INTERRUPTED";
   // Hardware
-  rfVoltMv: number;
+  systemState: number;
+  systemStateLabel: "INIT" | "IDLE" | "FLIGHT" | "UNKNOWN";
   halowCurrMa: number;
   chipTempC: number;
   heaterPower: number;
@@ -125,7 +126,8 @@ function buildSimTick(prev: TelemetryData, tick: number): TelemetryData {
     noiseFloor: -100 + Math.random() * 5,
     txMcs: newRssi > -70 ? 7 : newRssi > -85 ? 3 : 0,
     halowStatus: newRssi > -70 ? "ACTIVE" : newRssi > -85 ? "DEGRADED" : "INTERRUPTED",
-    rfVoltMv: 1500 + Math.round((Math.random() - 0.5) * 200),
+    systemState: phase === "pre" ? 1 : 2,
+    systemStateLabel: phase === "pre" ? "IDLE" : "FLIGHT",
     halowCurrMa: 120 + Math.round((Math.random() - 0.5) * 20),
     chipTempC: +(22 + (Math.random() - 0.5) * 2).toFixed(2),
     heaterPower: phase === "ascent" || phase === "float" ? Math.round(50 + Math.random() * 50) : 0,
@@ -156,7 +158,8 @@ const INITIAL_TELEMETRY: TelemetryData = {
   noiseFloor: -100,
   txMcs: 7,
   halowStatus: "ACTIVE",
-  rfVoltMv: 1500,
+  systemState: 0,
+  systemStateLabel: "INIT",
   halowCurrMa: 120,
   chipTempC: 22,
   heaterPower: 0,
