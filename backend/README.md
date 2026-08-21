@@ -91,7 +91,10 @@ round-trip time:
 { "ok": true, "cmd": "PING", "token": 4660, "rttMs": 12, "from": "10.86.110.200:5000" }
 ```
 
-Available commands: `SYS_RESET`, `SYS_START`, `SYS_STOP`, `PING`, `HEAT_MANUAL`, `HEAT_AUTO`, `HALOW_CONNECT`, `SET_TX_POWER`, `SET_MCS_MODE`, `RF_SILENCE`, `SAVE_DATA`, `SEND_HALOW`, `SEND_ELINK`
+Available commands: `SYS_RESET`, `SYS_START`, `SYS_STOP`, `PING`, `SYNC_TIME`, `HEAT_MANUAL`, `HEAT_AUTO`, `HALOW_CONNECT`, `SET_TX_POWER`, `SET_MCS_MODE`, `RF_SILENCE`, `SAVE_DATA`, `SEND_HALOW`, `SEND_ELINK`
+
+`SYNC_TIME` uses command ID `0x05` with an empty payload. The REST request only
+returns success after the payload replies with `ACK: SYNC_TIME`.
 
 ## WebSocket messages
 
@@ -109,7 +112,9 @@ The frontend connects to `ws://localhost:8765`.
 
 Logging starts automatically with the backend. Each run creates two independent,
 session-stamped files in `./logs`: `halow_live_<session>.csv` and
-`elink_live_<session>.csv`. Rows are appended immediately so a process crash does
+`elink_live_<session>.csv`. Confirmed mission-time synchronizations are written to
+`mission_events_<session>.csv`, including the approximate UTC anchor for payload
+`T+0`, the command-send UTC and the confirmation UTC. Rows are appended immediately so a process crash does
 not lose an in-memory batch.
 
 `GET /logs` lists the available CSV files and `GET /logs/<filename>` downloads a

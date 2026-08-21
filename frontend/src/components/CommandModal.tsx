@@ -20,6 +20,7 @@ interface CommandDef {
 const COMMANDS: CommandDef[] = [
   // System
   { label: "PING",       cmd: "PING",       description: "Comprueba el enlace E-Link y mide el tiempo de ida y vuelta" },
+  { label: "SYNC TIME",  cmd: "SYNC_TIME",  description: "Establece este instante como T+0 de misión y registra su referencia UTC" },
   { label: "SYS START",  cmd: "SYS_START",  description: "Inicia operaciones del experimento" },
   { label: "SYS STOP",   cmd: "SYS_STOP",   description: "Detiene el experimento (MCU en idle)", danger: true },
   { label: "SYS RESET",  cmd: "SYS_RESET",  description: "Reset del sistema", danger: true },
@@ -78,12 +79,17 @@ export default function CommandModal({ open, onClose }: CommandModalProps) {
     const pingDetails = selected.cmd === "PING" && res.ok
       ? `PONG · RTT ${res.rttMs} ms · token 0x${(res.token ?? 0).toString(16).padStart(4, "0")}`
       : null;
+    const syncDetails = selected.cmd === "SYNC_TIME" && res.ok
+      ? `T+0 confirmado · UTC aprox. ${res.t0UtcApprox ?? "registrada por backend"}`
+      : null;
     setLastResult({
       ok: res.ok,
-      msg: pingDetails ?? (res.ok ? `${selected.label} enviado` : (res.error ?? "Error")),
+      msg: syncDetails ?? pingDetails
+        ?? (res.ok ? `${selected.label} enviado` : (res.error ?? "Error")),
     });
     setSending(false);
-    if (res.ok && selected.cmd !== "PING" && !selected.params?.length) setSelected(null);
+    if (res.ok && selected.cmd !== "PING" && selected.cmd !== "SYNC_TIME"
+        && !selected.params?.length) setSelected(null);
   }
 
   if (!open) return null;

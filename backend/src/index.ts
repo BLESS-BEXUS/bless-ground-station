@@ -7,13 +7,14 @@ import path from "node:path";
 import {
   parsePacket,
   parsePong,
+  parseCommandResponse,
   buildCommand,
   buildPingCommand,
   CMD,
   PACKET_SIZE,
 } from "./protocol";
 import type { CmdId } from "./protocol";
-import { MissionLogger } from "./logger";
+import { MissionEventLogger, MissionLogger } from "./logger";
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -26,6 +27,7 @@ const ELINK_REMOTE_HOST = process.env.ELINK_REMOTE_HOST ?? "10.86.110.200";
 const ELINK_REMOTE_PORT = Number(process.env.ELINK_REMOTE_PORT ?? 5000);
 const ELINK_LOCAL_PORT = Number(process.env.ELINK_LOCAL_PORT ?? 5000);
 const ELINK_PING_TIMEOUT_MS = Number(process.env.ELINK_PING_TIMEOUT_MS ?? 2000);
+const ELINK_COMMAND_TIMEOUT_MS = Number(process.env.ELINK_COMMAND_TIMEOUT_MS ?? 2000);
 const LINK_FRESHNESS_MS = Number(process.env.LINK_FRESHNESS_MS ?? 5000);
 
 // ─── Loggers ──────────────────────────────────────────────────────────────────
@@ -47,11 +49,13 @@ const elinkLogger = new MissionLogger(
   "pressurePa,extTempC,intTempC,extHumidityRh,radiationCps,errorFlags,halowStatus\n",
   false
 );
+const missionEventLogger = new MissionEventLogger("./logs", "mission_events.csv");
 halowLogger.open();
 elinkLogger.open();
 const startupSessionId = new Date().toISOString().replace(/[:.]/g, "-");
 halowLogger.start(startupSessionId);
 elinkLogger.start(startupSessionId);
+missionEventLogger.start(startupSessionId);
 
 // ─── GS RF stats (from T-HaLow rx0/tx0 ASCII lines) ─────────────────────────
 
@@ -249,8 +253,23 @@ interface PendingPing {
   reject: (error: Error) => void;
 }
 
+interface MissionTimeSyncResult {
+  t0UtcApprox: string;
+  commandSentUtc: string;
+  confirmedUtc: string;
+  from: string;
+}
+
+interface PendingMissionTimeSync {
+  commandSentUtc: string;
+  timeout: NodeJS.Timeout;
+  resolve: (result: MissionTimeSyncResult) => void;
+  reject: (error: Error) => void;
+}
+
 const elinkUdp = dgram.createSocket("udp4");
 const pendingPings = new Map<number, PendingPing>();
+let pendingMissionTimeSync: PendingMissionTimeSync | null = null;
 let elinkUdpReady = false;
 let nextPingToken = Math.floor(Math.random() * 0x10000);
 let lastElinkActivityAt = 0;
@@ -308,6 +327,53 @@ function handleElinkTelemetry(frame: Buffer): boolean {
   return true;
 }
 
+function handleCommandResponse(frame: Buffer, source: string): boolean {
+  const response = parseCommandResponse(frame);
+  if (!response) return false;
+
+  lastElinkActivityAt = Date.now();
+  if (!pendingMissionTimeSync) {
+    console.log(`[cmd] ${response.message} from ${source}`);
+    return true;
+  }
+
+  if (response.kind === "ack" && response.message !== "ACK: SYNC_TIME") {
+    console.log(`[cmd] Ignoring unrelated ACK while SYNC_TIME is pending: ${response.message}`);
+    return true;
+  }
+
+  const pending = pendingMissionTimeSync;
+  pendingMissionTimeSync = null;
+  clearTimeout(pending.timeout);
+
+  if (response.kind === "nack") {
+    pending.reject(new Error(`SYNC_TIME rejected by payload: ${response.message}`));
+    return true;
+  }
+
+  const confirmedUtc = new Date().toISOString();
+  const result: MissionTimeSyncResult = {
+    /* Normal E-Link latency is accepted, so the PC send instant is the
+     * approximate UTC anchor corresponding to payload mission T+0. */
+    t0UtcApprox: pending.commandSentUtc,
+    commandSentUtc: pending.commandSentUtc,
+    confirmedUtc,
+    from: source,
+  };
+  missionEventLogger.writeMissionTimeSync({
+    commandId: CMD.SYNC_TIME,
+    missionTimeMs: 0,
+    t0UtcApprox: result.t0UtcApprox,
+    commandSentUtc: result.commandSentUtc,
+    confirmedUtc: result.confirmedUtc,
+    source,
+  });
+  broadcast({ type: "mission_time_sync", ok: true, ...result });
+  console.log(`[mission-time] T+0 confirmed; UTC≈${result.t0UtcApprox}`);
+  pending.resolve(result);
+  return true;
+}
+
 function sendElinkFrame(frame: Buffer): Promise<void> {
   return new Promise((resolve, reject) => {
     if (!elinkUdpReady) {
@@ -346,6 +412,29 @@ function sendPing(): Promise<PingResult> {
   });
 }
 
+function sendMissionTimeSync(): Promise<MissionTimeSyncResult> {
+  if (pendingMissionTimeSync) {
+    return Promise.reject(new Error("A SYNC_TIME command is already pending"));
+  }
+
+  const commandSentUtc = new Date().toISOString();
+  const frame = buildCommand(CMD.SYNC_TIME);
+
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      pendingMissionTimeSync = null;
+      reject(new Error(`SYNC_TIME timeout after ${ELINK_COMMAND_TIMEOUT_MS} ms`));
+    }, ELINK_COMMAND_TIMEOUT_MS);
+
+    pendingMissionTimeSync = { commandSentUtc, timeout, resolve, reject };
+    sendElinkFrame(frame).catch((error: Error) => {
+      clearTimeout(timeout);
+      pendingMissionTimeSync = null;
+      reject(error);
+    });
+  });
+}
+
 function openElinkUdp(): void {
   elinkUdp.on("listening", () => {
     elinkUdpReady = true;
@@ -358,6 +447,7 @@ function openElinkUdp(): void {
     const source = `${remote.address}:${remote.port}`;
     if (handlePong(frame, source)) return;
     if (frame.length >= PACKET_SIZE && handleElinkTelemetry(frame)) return;
+    if (handleCommandResponse(frame, source)) return;
     console.warn(`[elink-udp] Ignored ${frame.length}B datagram from ${source}`);
   });
 
@@ -400,6 +490,17 @@ const httpServer = http.createServer((req, res) => {
           return;
         }
 
+        if (cmdName === "SYNC_TIME") {
+          const result = await sendMissionTimeSync();
+          res.writeHead(200, cors);
+          res.end(JSON.stringify({ ok: true, cmd: cmdName, ...result }));
+          return;
+        }
+
+        if (pendingMissionTimeSync) {
+          throw new Error("SYNC_TIME confirmation pending; wait before sending another command");
+        }
+
         const params: number[] = body ? (JSON.parse(body).params ?? []) : [];
         const payload = Buffer.from(params);
         const frame = buildCommand(CMD[cmdName] as CmdId, payload);
@@ -409,7 +510,7 @@ const httpServer = http.createServer((req, res) => {
         res.end(JSON.stringify({ ok: true, cmd: cmdName }));
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        const status = message.startsWith("Ping timeout") ? 504 : 503;
+        const status = message.includes("timeout after") ? 504 : 503;
         res.writeHead(status, cors);
         res.end(JSON.stringify({ ok: false, error: message }));
       }
@@ -434,6 +535,8 @@ const httpServer = http.createServer((req, res) => {
         elinkFile: elinkLogger.getFilePath(),
         halowRows: halowLogger.getRowCount(),
         elinkRows: elinkLogger.getRowCount(),
+        missionEventFile: missionEventLogger.getFilePath(),
+        missionEventRows: missionEventLogger.getRowCount(),
       },
     })); return;
   }
@@ -442,6 +545,7 @@ const httpServer = http.createServer((req, res) => {
     const sessionId = new Date().toISOString().replace(/[:.]/g, "-");
     halowLogger.start(sessionId);
     elinkLogger.start(sessionId);
+    missionEventLogger.start(sessionId);
     broadcast({ type: "logging", active: true });
     res.writeHead(200, cors);
     res.end(JSON.stringify({ ok: true, active: true }));

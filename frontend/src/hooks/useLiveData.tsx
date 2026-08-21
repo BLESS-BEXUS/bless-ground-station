@@ -73,6 +73,9 @@ export interface CommandResult {
   token?: number;
   rttMs?: number;
   from?: string;
+  t0UtcApprox?: string;
+  commandSentUtc?: string;
+  confirmedUtc?: string;
 }
 
 // Ground station — set exact coordinates for the campaign

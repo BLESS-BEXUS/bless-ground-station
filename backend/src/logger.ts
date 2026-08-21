@@ -109,3 +109,61 @@ export class MissionLogger {
   getFilePath(): string { return this.filePath; }
   getRowCount(): number { return this.rowCount; }
 }
+
+export interface MissionTimeSyncEvent {
+  commandId: number;
+  missionTimeMs: 0;
+  t0UtcApprox: string;
+  commandSentUtc: string;
+  confirmedUtc: string;
+  source: string;
+}
+
+const MISSION_EVENT_HEADER =
+  "event,commandId,status,missionTimeMs,t0UtcApprox,commandSentUtc,confirmedUtc,source\n";
+
+export class MissionEventLogger {
+  private readonly logDir: string;
+  private readonly baseFilename: string;
+  private filePath: string;
+  private rowCount = 0;
+  private active = false;
+
+  constructor(logDir = "./logs", filename = "mission_events.csv") {
+    if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+    this.logDir = logDir;
+    this.baseFilename = filename;
+    this.filePath = path.join(logDir, filename);
+  }
+
+  start(sessionId = new Date().toISOString().replace(/[:.]/g, "-")): void {
+    const parsed = path.parse(this.baseFilename);
+    this.filePath = path.join(
+      this.logDir,
+      `${parsed.name}_${sessionId}${parsed.ext || ".csv"}`,
+    );
+    this.rowCount = 0;
+    this.active = true;
+    fs.writeFileSync(this.filePath, MISSION_EVENT_HEADER, "utf-8");
+    console.log(`[event-logger] START — ${this.filePath}`);
+  }
+
+  writeMissionTimeSync(event: MissionTimeSyncEvent): void {
+    if (!this.active) this.start();
+    const row = [
+      "MISSION_TIME_SYNC",
+      event.commandId,
+      "CONFIRMED",
+      event.missionTimeMs,
+      event.t0UtcApprox,
+      event.commandSentUtc,
+      event.confirmedUtc,
+      event.source,
+    ].join(",");
+    fs.appendFileSync(this.filePath, row + "\n", "utf-8");
+    this.rowCount++;
+  }
+
+  getFilePath(): string { return this.filePath; }
+  getRowCount(): number { return this.rowCount; }
+}

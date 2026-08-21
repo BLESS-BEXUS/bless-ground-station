@@ -5,7 +5,7 @@
  *
  * Header
  *   SYNC          uint16   2   Fixed: 0xB1E5 (or 0xAA55 dev)
- *   TIMESTAMP     uint32   4   ms since boot
+ *   TIMESTAMP     uint32   4   mission elapsed ms (boot ms before first sync)
  *   COUNT         uint32   4   sequential counter
  * GNSS
  *   GPS_LAT       int32    4   decimal degrees × 1e7
@@ -165,6 +165,7 @@ export const CMD = {
   SYS_START: 0x02,
   SYS_STOP: 0x03,
   PING: 0x04,
+  SYNC_TIME: 0x05,
   HEAT_MANUAL: 0x10,
   HEAT_AUTO: 0x11,
   HALOW_CONNECT: 0x20,
@@ -185,6 +186,11 @@ export const ELINK_PONG_ID = 0x84;
 
 export interface PongFrame {
   token: number;
+}
+
+export interface ELinkCommandResponse {
+  kind: "ack" | "nack";
+  message: string;
 }
 
 function commandChecksum(frame: Buffer): number {
@@ -224,4 +230,11 @@ export function parsePong(frame: Buffer): PongFrame | null {
   if (frame.readUInt16LE(8) !== commandChecksum(frame)) return null;
 
   return { token: frame.readUInt16LE(6) };
+}
+
+export function parseCommandResponse(frame: Buffer): ELinkCommandResponse | null {
+  const message = frame.toString("ascii").replace(/\0/g, "").trim();
+  if (message.startsWith("ACK:")) return { kind: "ack", message };
+  if (message.startsWith("ERR:")) return { kind: "nack", message };
+  return null;
 }

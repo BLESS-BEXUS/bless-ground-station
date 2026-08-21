@@ -4,15 +4,18 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  buildCommand,
   buildPingCommand,
+  CMD,
   ELINK_COMMAND_SIZE,
   ELINK_PONG_ID,
   PACKET_SIZE,
   parsePacket,
+  parseCommandResponse,
   parsePong,
   SYNC_MARKER,
 } from "./protocol";
-import { MissionLogger } from "./logger";
+import { MissionEventLogger, MissionLogger } from "./logger";
 
 function crc16(buf: Buffer, length: number): number {
   let crc = 0xffff;
@@ -96,6 +99,32 @@ test("builds the firmware-compatible binary ping command", () => {
   );
 });
 
+test("builds SYNC_TIME with free system ID 0x05 and no payload", () => {
+  const sync = buildCommand(CMD.SYNC_TIME);
+
+  assert.equal(sync.length, ELINK_COMMAND_SIZE);
+  assert.deepEqual(
+    [...sync],
+    [0x75, 0xe1, 0x45, 0xc2, 0x05, 0x00, 0x00, 0x00, 0x62, 0x02],
+  );
+  assert.deepEqual(
+    { SYS_RESET: CMD.SYS_RESET, SYS_START: CMD.SYS_START, SYS_STOP: CMD.SYS_STOP, PING: CMD.PING },
+    { SYS_RESET: 0x01, SYS_START: 0x02, SYS_STOP: 0x03, PING: 0x04 },
+  );
+});
+
+test("parses the existing E-Link ACK and NACK response convention", () => {
+  assert.deepEqual(
+    parseCommandResponse(Buffer.from("ACK: SYNC_TIME\r\n", "ascii")),
+    { kind: "ack", message: "ACK: SYNC_TIME" },
+  );
+  assert.deepEqual(
+    parseCommandResponse(Buffer.from("ERR: PAYLOAD\r\n", "ascii")),
+    { kind: "nack", message: "ERR: PAYLOAD" },
+  );
+  assert.equal(parseCommandResponse(Buffer.from("not a response")), null);
+});
+
 test("parses a pong and rejects a corrupted checksum", () => {
   const pong = buildPingCommand(0xbeef);
   pong.writeUInt8(ELINK_PONG_ID, 4);
@@ -125,6 +154,29 @@ test("writes mission rows immediately to a session-specific file", () => {
     assert.ok(content.startsWith("header\n"));
     assert.equal(content.trim().split("\n").length, 2);
     logger.stop();
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("logs a confirmed mission T+0 to its UTC anchor", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bless-events-"));
+  try {
+    const logger = new MissionEventLogger(directory);
+    logger.start("test-session");
+    logger.writeMissionTimeSync({
+      commandId: CMD.SYNC_TIME,
+      missionTimeMs: 0,
+      t0UtcApprox: "2026-08-21T10:00:00.000Z",
+      commandSentUtc: "2026-08-21T10:00:00.000Z",
+      confirmedUtc: "2026-08-21T10:00:00.050Z",
+      source: "10.86.110.200:5000",
+    });
+
+    const content = fs.readFileSync(logger.getFilePath(), "utf-8");
+    assert.match(content, /MISSION_TIME_SYNC,5,CONFIRMED,0/);
+    assert.match(content, /2026-08-21T10:00:00.000Z/);
+    assert.equal(logger.getRowCount(), 1);
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
