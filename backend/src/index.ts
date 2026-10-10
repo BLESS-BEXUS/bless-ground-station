@@ -52,10 +52,25 @@ const elinkLogger = new MissionLogger(
 const missionEventLogger = new MissionEventLogger("./logs", "mission_events.csv");
 halowLogger.open();
 elinkLogger.open();
-const startupSessionId = new Date().toISOString().replace(/[:.]/g, "-");
-halowLogger.start(startupSessionId);
-elinkLogger.start(startupSessionId);
-missionEventLogger.start(startupSessionId);
+
+function startLogging(): void {
+  if (!halowLogger.isActive()) {
+    const sessionId = new Date().toISOString().replace(/[:.]/g, "-");
+    halowLogger.start(sessionId);
+    elinkLogger.start(sessionId);
+    missionEventLogger.start(sessionId);
+  }
+  broadcast({ type: "logging", active: true });
+}
+
+// Logging starts with the first packet from either link. It happens once per
+// run, so a manual stop from the UI is never overridden by the next packet.
+let autoLoggingHandled = false;
+function autoStartLogging(): void {
+  if (autoLoggingHandled) return;
+  autoLoggingHandled = true;
+  startLogging();
+}
 
 // ─── GS RF stats (from T-HaLow rx0/tx0 ASCII lines) ─────────────────────────
 
@@ -110,6 +125,7 @@ function processHalowData(): void {
           packet.gsSnr = gsRfStats.snr;
           packet.gsFreqDev = gsRfStats.freqDev;
           packet.gsMcs = gsRfStats.mcs;
+          autoStartLogging();
           halowLogger.write(packet);
           broadcast({ type: "telemetry", data: packet });
           console.log(`[halow] #${halowRxCount} alt=${packet.altitude}m rssi=${packet.rssi}dBm gsRssi=${gsRfStats.rssi}`);
@@ -137,8 +153,17 @@ function processHalowData(): void {
   }
 }
 
+function halowDisabled(port: string): boolean {
+  return ["", "none", "off", "disabled"].includes(port.trim().toLowerCase());
+}
+
 function openHalow(): void {
-  if (!halowPort) return;
+  if (halowDisabled(halowPort)) {
+    console.log("[halow] Disabled (HALOW_PORT=none): E-Link-only ground station");
+    halowConnected = false;
+    broadcast({ type: "connection", serial: false, port: halowPort, disabled: true });
+    return;
+  }
   console.log(`[halow] Opening ${halowPort} at ${BAUD_RATE} baud`);
   halowAutoReconnect = true;
   halowSerial = new SerialPort({ path: halowPort, baudRate: BAUD_RATE });
@@ -321,6 +346,7 @@ function handleElinkTelemetry(frame: Buffer): boolean {
 
   elinkRxCount++;
   lastElinkActivityAt = Date.now();
+  autoStartLogging();
   elinkLogger.write(packet);
   broadcast({ type: "elink_telemetry", data: packet });
   console.log(`[elink] #${elinkRxCount} alt=${packet.altitude}m rssi=${packet.rssi}dBm`);
@@ -542,17 +568,15 @@ const httpServer = http.createServer((req, res) => {
   }
 
   if (req.method === "POST" && req.url === "/logging/start") {
-    const sessionId = new Date().toISOString().replace(/[:.]/g, "-");
-    halowLogger.start(sessionId);
-    elinkLogger.start(sessionId);
-    missionEventLogger.start(sessionId);
-    broadcast({ type: "logging", active: true });
+    autoLoggingHandled = true;
+    startLogging();
     res.writeHead(200, cors);
     res.end(JSON.stringify({ ok: true, active: true }));
     return;
   }
 
   if (req.method === "POST" && req.url === "/logging/stop") {
+    autoLoggingHandled = true;
     halowLogger.stop();
     elinkLogger.stop();
     broadcast({ type: "logging", active: false, halowRows: halowLogger.getRowCount(), elinkRows: elinkLogger.getRowCount() });
@@ -641,7 +665,12 @@ function broadcast(msg: object): void {
 
 wss.on("connection", (ws) => {
   console.log("[ws] Client connected");
-  ws.send(JSON.stringify({ type: "connection", serial: halowConnected, port: halowPort }));
+  ws.send(JSON.stringify({
+    type: "connection",
+    serial: halowConnected,
+    port: halowPort,
+    disabled: halowDisabled(halowPort),
+  }));
   ws.send(JSON.stringify({
     type: "elink_connection",
     ready: elinkUdpReady || elinkConnected,

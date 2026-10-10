@@ -12,6 +12,14 @@ HALOW_PORT=COM4 npm run dev
 
 Replace `COM4` with your actual serial port (check Device Manager → Ports).
 
+A ground station that only receives E-Link (no T-HaLow attached) must not try to
+open a serial port. Disable it with `HALOW_PORT=none` (`off` and `disabled` also work):
+
+```powershell
+$env:HALOW_PORT = "none"
+npm run dev
+```
+
 The E-Link command channel uses UDP. Its defaults match the flight firmware:
 
 ```powershell
@@ -110,7 +118,8 @@ The frontend connects to `ws://localhost:8765`.
 
 ## Logs
 
-Logging starts automatically with the backend. Each run creates two independent,
+Logging starts automatically with the first packet received from either link (the
+UI shows REC), and a manual stop is respected until you start it again. Each run creates two independent,
 session-stamped files in `./logs`: `halow_live_<session>.csv` and
 `elink_live_<session>.csv`. Confirmed mission-time synchronizations are written to
 `mission_events_<session>.csv`, including the approximate UTC anchor for payload

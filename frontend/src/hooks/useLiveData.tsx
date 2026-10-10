@@ -7,51 +7,61 @@ import React, {
   useRef,
 } from "react";
 import { LINK_FRESHNESS_MS, selectTelemetrySource } from "@/lib/linkSelection";
+import {
+  GROUND_STATION_STORAGE_KEY,
+  loadGroundStation,
+  saveGroundStation,
+  type GroundStationLocation,
+} from "@/lib/groundStation";
 
 // ─── Shared telemetry shape ────────────────────────────────────────────────────
+// Every value is null until the first packet arrives; the UI shows "—" for null.
 
 export interface TelemetryData {
   // GNSS
-  latitude: number;
-  longitude: number;
-  altitude: number;
-  gpsFix: boolean;
-  gpsSats: number;
+  latitude: number | null;
+  longitude: number | null;
+  altitude: number | null;
+  gpsFix: boolean | null;
+  gpsSats: number | null;
   // RF
-  rssi: number;
-  snr: number;
-  freqDevHz: number;
-  successRate: number;
-  noiseFloor: number;
-  txMcs: number;
-  halowStatus: "ACTIVE" | "DEGRADED" | "INTERRUPTED";
+  rssi: number | null;
+  snr: number | null;
+  freqDevHz: number | null;
+  successRate: number | null;
+  noiseFloor: number | null;
+  txMcs: number | null;
+  halowStatus: "ACTIVE" | "DEGRADED" | "INTERRUPTED" | null;
   // Hardware
-  systemState: number;
-  systemStateLabel: "INIT" | "IDLE" | "FLIGHT" | "UNKNOWN";
-  halowCurrMa: number;
-  chipTempC: number;
-  heaterPower: number;
+  systemState: number | null;
+  systemStateLabel: "INIT" | "IDLE" | "FLIGHT" | "UNKNOWN" | null;
+  halowCurrMa: number | null;
+  chipTempC: number | null;
+  heaterPower: number | null;
   // Environment
-  pressurePa: number;
-  extTempC: number;
-  intTempC: number;
-  extHumidityRh: number;
-  radiationCps: number;
+  pressurePa: number | null;
+  extTempC: number | null;
+  intTempC: number | null;
+  extHumidityRh: number | null;
+  radiationCps: number | null;
   // Meta
-  timestamp: number;
-  packetCount: number;
-  errorFlags: number;
-  receivedAt: string;
+  timestamp: number | null;
+  packetCount: number | null;
+  errorFlags: number | null;
+  receivedAt: string | null;
   // Derived history
   rssiHistory: { time: number; rssi: number; snr: number }[];
   trajectoryHistory: { lat: number; lng: number; alt: number }[];
 }
 
+/** Which downlinks are delivering packets right now. */
+export type LinkMode = "none" | "elink" | "halow" | "halow+elink";
+
 export interface ConnectionState {
   wsConnected: boolean;
   serialConnected: boolean;
   serialPort: string;
-  mode: "live" | "simulation";
+  mode: LinkMode;
   activeSource: "elink" | "halow" | "none";
   elinkConnected: boolean;
   elinkReady: boolean;
@@ -59,12 +69,7 @@ export interface ConnectionState {
   elinkPort: string;
 }
 
-export interface GroundStationLocation {
-  lat: number;
-  lng: number;
-  alt: number;
-  name: string;
-}
+export type { GroundStationLocation } from "@/lib/groundStation";
 
 export interface CommandResult {
   ok: boolean;
@@ -78,29 +83,6 @@ export interface CommandResult {
   confirmedUtc?: string;
 }
 
-// Ground station — set exact coordinates for the campaign
-export const GROUND_STATION = {
-  lat: 67.8856,
-  lng: 21.0786,
-  alt: 310,
-  name: "Esrange Space Center",
-};
-
-function loadGroundStation(): GroundStationLocation {
-  try {
-    const stored = window.localStorage.getItem("bless-ground-station");
-    if (stored) {
-      const parsed = JSON.parse(stored) as GroundStationLocation;
-      if (Number.isFinite(parsed.lat) && Number.isFinite(parsed.lng)
-          && Number.isFinite(parsed.alt)) {
-        return { ...GROUND_STATION, ...parsed };
-      }
-    }
-  } catch {
-    // Fall back to the campaign defaults.
-  }
-  return GROUND_STATION;
-}
 
 // ─── Context ──────────────────────────────────────────────────────────────────
 
@@ -120,115 +102,68 @@ interface LiveDataContextValue {
 
 const LiveDataContext = createContext<LiveDataContextValue | null>(null);
 
-// ─── Simulation fallback ───────────────────────────────────────────────────────
-
-function buildSimTick(prev: TelemetryData, tick: number): TelemetryData {
-  const elapsed = tick * 2;
-  const phase =
-    elapsed < 30 ? "pre"
-    : elapsed < 180 ? "ascent"
-    : elapsed < 300 ? "float"
-    : elapsed < 420 ? "descent"
-    : "recovery";
-
-  let altDelta = 0, latDelta = 0, lngDelta = 0;
-  if (phase === "ascent") { altDelta = 300 + Math.random() * 100; latDelta = 0.002; lngDelta = 0.001; }
-  else if (phase === "float") { altDelta = (Math.random() - 0.5) * 50; latDelta = 0.001; lngDelta = 0.0005; }
-  else if (phase === "descent") { altDelta = -(400 + Math.random() * 100); latDelta = 0.001; lngDelta = 0.0005; }
-
-  const newAlt = Math.max(0, prev.altitude + altDelta);
-  const newLat = prev.latitude + latDelta;
-  const newLng = prev.longitude + lngDelta;
-  const baseRssi = phase === "float" ? -75 : phase === "descent" ? -80 : -60;
-  const newRssi = baseRssi + (Math.random() - 0.5) * 20;
-  const newSnr = 20 + (Math.random() - 0.5) * 10;
-  const extTemp = Math.max(-60, Math.min(20, prev.extTempC + (phase === "ascent" ? -2 : phase === "descent" ? 2 : (Math.random() - 0.5))));
-
-  return {
-    ...prev,
-    latitude: newLat,
-    longitude: newLng,
-    altitude: newAlt,
-    gpsFix: true,
-    gpsSats: 8 + Math.floor(Math.random() * 4),
-    rssi: newRssi,
-    snr: newSnr,
-    freqDevHz: Math.round((Math.random() - 0.5) * 500),
-    successRate: newRssi > -80 ? 95 + Math.floor(Math.random() * 5) : 60 + Math.floor(Math.random() * 30),
-    noiseFloor: -100 + Math.random() * 5,
-    txMcs: newRssi > -70 ? 7 : newRssi > -85 ? 3 : 0,
-    halowStatus: newRssi > -70 ? "ACTIVE" : newRssi > -85 ? "DEGRADED" : "INTERRUPTED",
-    systemState: phase === "pre" ? 1 : 2,
-    systemStateLabel: phase === "pre" ? "IDLE" : "FLIGHT",
-    halowCurrMa: 120 + Math.round((Math.random() - 0.5) * 20),
-    chipTempC: +(22 + (Math.random() - 0.5) * 2).toFixed(2),
-    heaterPower: phase === "ascent" || phase === "float" ? Math.round(50 + Math.random() * 50) : 0,
-    pressurePa: Math.round(101325 * Math.exp(-newAlt / 8500)),
-    extTempC: +extTemp.toFixed(2),
-    intTempC: +(22 + (Math.random() - 0.5) * 2).toFixed(2),
-    extHumidityRh: +(40 + Math.random() * 10).toFixed(2),
-    radiationCps: Math.round(2 + newAlt / 5000),
-    timestamp: elapsed * 1000,
-    packetCount: prev.packetCount + 1,
-    errorFlags: 0,
-    receivedAt: new Date().toISOString(),
-    rssiHistory: [...prev.rssiHistory, { time: elapsed, rssi: newRssi, snr: newSnr }].slice(-60),
-    trajectoryHistory: [...prev.trajectoryHistory, { lat: newLat, lng: newLng, alt: newAlt }],
-  };
-}
-
 const INITIAL_TELEMETRY: TelemetryData = {
-  latitude: GROUND_STATION.lat + 0.05,
-  longitude: GROUND_STATION.lng + 0.05,
-  altitude: 0,
-  gpsFix: false,
-  gpsSats: 0,
-  rssi: -55,
-  snr: 25,
-  freqDevHz: 0,
-  successRate: 100,
-  noiseFloor: -100,
-  txMcs: 7,
-  halowStatus: "ACTIVE",
-  systemState: 0,
-  systemStateLabel: "INIT",
-  halowCurrMa: 120,
-  chipTempC: 22,
-  heaterPower: 0,
-  pressurePa: 101325,
-  extTempC: 15,
-  intTempC: 22,
-  extHumidityRh: 45,
-  radiationCps: 2,
-  timestamp: 0,
-  packetCount: 0,
-  errorFlags: 0,
-  receivedAt: new Date().toISOString(),
+  latitude: null,
+  longitude: null,
+  altitude: null,
+  gpsFix: null,
+  gpsSats: null,
+  rssi: null,
+  snr: null,
+  freqDevHz: null,
+  successRate: null,
+  noiseFloor: null,
+  txMcs: null,
+  halowStatus: null,
+  systemState: null,
+  systemStateLabel: null,
+  halowCurrMa: null,
+  chipTempC: null,
+  heaterPower: null,
+  pressurePa: null,
+  extTempC: null,
+  intTempC: null,
+  extHumidityRh: null,
+  radiationCps: null,
+  timestamp: null,
+  packetCount: null,
+  errorFlags: null,
+  receivedAt: null,
   rssiHistory: [],
-  trajectoryHistory: [{ lat: GROUND_STATION.lat + 0.05, lng: GROUND_STATION.lng + 0.05, alt: 0 }],
+  trajectoryHistory: [],
 };
 
 function mergePacket(prev: TelemetryData, d: TelemetryData): TelemetryData {
+  const lat = d.latitude;
+  const lng = d.longitude;
+  const hasPosition = lat !== null && lng !== null;
   const lastPt = prev.trajectoryHistory[prev.trajectoryHistory.length - 1];
-  const jump = Boolean(lastPt
-    && (Math.abs(lastPt.lat - d.latitude) > 1
-      || Math.abs(lastPt.lng - d.longitude) > 1));
+  const jump = Boolean(lastPt && hasPosition
+    && (Math.abs(lastPt.lat - lat) > 1 || Math.abs(lastPt.lng - lng) > 1));
+  const hasRf = d.rssi !== null && d.snr !== null && d.timestamp !== null;
   return {
     ...d,
-    rssiHistory: [...(jump ? [] : prev.rssiHistory), {
-      time: d.timestamp / 1000,
-      rssi: d.rssi,
-      snr: d.snr,
-    }].slice(-60),
-    trajectoryHistory: [...(jump ? [] : prev.trajectoryHistory), {
-      lat: d.latitude,
-      lng: d.longitude,
-      alt: d.altitude,
-    }],
+    rssiHistory: hasRf
+      ? [...(jump ? [] : prev.rssiHistory), {
+          time: d.timestamp / 1000,
+          rssi: d.rssi,
+          snr: d.snr,
+        }].slice(-60)
+      : prev.rssiHistory,
+    trajectoryHistory: hasPosition
+      ? [...(jump ? [] : prev.trajectoryHistory), {
+          lat,
+          lng,
+          alt: d.altitude ?? 0,
+        }]
+      : prev.trajectoryHistory,
   };
 }
 
 // ─── Provider ─────────────────────────────────────────────────────────────────
+
+// Longer than the slowest downlink period (HaLow, ~10 s) so the mode does not flap.
+const LIVE_TIMEOUT_MS = 30_000;
 
 const BACKEND_HOST = window.location.hostname;
 const WS_URL = `ws://${BACKEND_HOST}:8765`;
@@ -238,13 +173,13 @@ export function LiveDataProvider({ children }: { children: React.ReactNode }) {
   const [telemetry, setTelemetry] = useState<TelemetryData>(INITIAL_TELEMETRY);
   const [elinkTelemetry, setElinkTelemetry] = useState<TelemetryData>(INITIAL_TELEMETRY);
   const [logging, setLogging] = useState(false);
-  const [groundStation, setGroundStation] = useState<GroundStationLocation>(loadGroundStation);
+  const [groundStation, setGroundStationState] = useState<GroundStationLocation>(loadGroundStation);
   const loggingRef = useRef(false);
   const [connection, setConnection] = useState<ConnectionState>({
     wsConnected: false,
     serialConnected: false,
     serialPort: "—",
-    mode: "simulation",
+    mode: "none",
     activeSource: "none",
     elinkConnected: false,
     elinkReady: false,
@@ -253,31 +188,27 @@ export function LiveDataProvider({ children }: { children: React.ReactNode }) {
   });
 
   const wsRef = useRef<WebSocket | null>(null);
-  const simTickRef = useRef(0);
-  const simIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastElinkActivityRef = useRef(0);
   const lastElinkRxRef = useRef(0);
   const lastHalowRxRef = useRef(0);
   const latestElinkRef = useRef<TelemetryData | null>(null);
   const latestHalowRef = useRef<TelemetryData | null>(null);
 
-  useEffect(() => {
-    window.localStorage.setItem("bless-ground-station", JSON.stringify(groundStation));
-  }, [groundStation]);
-
-  const startSim = useCallback(() => {
-    if (simIntervalRef.current) return;
-    simIntervalRef.current = setInterval(() => {
-      simTickRef.current += 1;
-      setTelemetry((prev) => buildSimTick(prev, simTickRef.current));
-    }, 2000);
+  // Persist only when the operator changes the coordinates (never on mount, so a
+  // tab that just loaded can't overwrite what another tab saved).
+  const setGroundStation = useCallback((location: GroundStationLocation) => {
+    saveGroundStation(location);
+    setGroundStationState(location);
   }, []);
 
-  const stopSim = useCallback(() => {
-    if (simIntervalRef.current) {
-      clearInterval(simIntervalRef.current);
-      simIntervalRef.current = null;
-    }
+  // Adopt coordinates saved from another tab instead of clobbering them later.
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== null && e.key !== GROUND_STATION_STORAGE_KEY) return;
+      setGroundStationState(loadGroundStation());
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
   }, []);
 
   const connectWs = useCallback(() => {
@@ -295,14 +226,11 @@ export function LiveDataProvider({ children }: { children: React.ReactNode }) {
         const msg = JSON.parse(evt.data as string);
 
         if (msg.type === "connection") {
-          const serial = msg.serial as boolean;
           setConnection((c) => ({
             ...c,
-            serialConnected: serial,
+            serialConnected: msg.serial as boolean,
             serialPort: msg.port ?? c.serialPort,
-            mode: serial ? "live" : "simulation",
           }));
-          if (serial) stopSim();
         }
 
         if (msg.type === "logging") {
@@ -340,7 +268,6 @@ export function LiveDataProvider({ children }: { children: React.ReactNode }) {
           setTelemetry(next);
           setConnection((c) => ({
             ...c,
-            mode: "live",
             activeSource: "elink",
             elinkConnected: true,
           }));
@@ -357,7 +284,6 @@ export function LiveDataProvider({ children }: { children: React.ReactNode }) {
             setTelemetry(next);
             setConnection((c) => ({
               ...c,
-              mode: "live",
               activeSource: "halow",
               halowFresh: true,
             }));
@@ -376,15 +302,14 @@ export function LiveDataProvider({ children }: { children: React.ReactNode }) {
       setConnection((c) => ({ ...c, wsConnected: false }));
       setTimeout(connectWs, 3000);
     };
-  }, [startSim, stopSim]);
+  }, []);
 
   useEffect(() => {
     connectWs();
     return () => {
-      stopSim();
       wsRef.current?.close();
     };
-  }, [connectWs, startSim, stopSim]);
+  }, [connectWs]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -407,16 +332,26 @@ export function LiveDataProvider({ children }: { children: React.ReactNode }) {
       } else if (halowFresh && latestHalowRef.current) {
         setTelemetry(latestHalowRef.current);
       } else {
-        setTelemetry((prev) => prev.halowStatus === "INTERRUPTED"
+        setTelemetry((prev) => prev.receivedAt === null || prev.halowStatus === "INTERRUPTED"
           ? prev
           : { ...prev, halowStatus: "INTERRUPTED" });
       }
+
+      const elinkAlive = lastElinkRxRef.current > 0
+        && (now - lastElinkRxRef.current) <= LIVE_TIMEOUT_MS;
+      const halowAlive = lastHalowRxRef.current > 0
+        && (now - lastHalowRxRef.current) <= LIVE_TIMEOUT_MS;
+      const mode: LinkMode = elinkAlive && halowAlive ? "halow+elink"
+        : elinkAlive ? "elink"
+        : halowAlive ? "halow"
+        : "none";
 
       setConnection((c) => ({
         ...c,
         elinkConnected: elinkActivityFresh,
         halowFresh,
         activeSource: source,
+        mode,
       }));
     }, 1000);
 

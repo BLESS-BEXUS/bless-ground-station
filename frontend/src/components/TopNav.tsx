@@ -1,6 +1,10 @@
 import { useState } from "react";
 import { NavLink } from "react-router-dom";
 import { useLiveData } from "@/hooks/useLiveData";
+import { useMissionClock } from "@/hooks/useMissionClock";
+import { LINK_MODE_LABEL } from "@/lib/format";
+import { missionClockParts } from "@/lib/missionClock";
+import MissionClockModal from "./MissionClockModal";
 import SettingsModal from "./SettingsModal";
 
 const navItems = [
@@ -13,12 +17,22 @@ const navItems = [
 export default function TopNav() {
   const { telemetry, connection, logging, toggleLogging } = useLiveData();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [clockOpen, setClockOpen] = useState(false);
+  const missionClock = useMissionClock();
 
-  const elapsed = Math.floor(telemetry.timestamp / 1000);
-  const h = Math.floor(elapsed / 3600).toString().padStart(2, "0");
-  const m = Math.floor((elapsed % 3600) / 60).toString().padStart(2, "0");
-  const s = (elapsed % 60).toString().padStart(2, "0");
-  const elapsedStr = `${h}:${m}:${s}`;
+  // Mission clock: set by the operator, independent of incoming packets.
+  const clockParts = missionClock.offsetMs === null ? null : missionClockParts(missionClock.offsetMs);
+  const countingDown = clockParts?.sign === "-";
+
+  // Payload uptime (ms since boot) is only shown for reference inside the clock dialog.
+  let payloadUptime: string | null = null;
+  if (telemetry.timestamp !== null) {
+    const elapsed = Math.floor(telemetry.timestamp / 1000);
+    const h = Math.floor(elapsed / 3600).toString().padStart(2, "0");
+    const m = Math.floor((elapsed % 3600) / 60).toString().padStart(2, "0");
+    const s = (elapsed % 60).toString().padStart(2, "0");
+    payloadUptime = `${h}:${m}:${s}`;
+  }
 
   return (
     <>
@@ -58,16 +72,18 @@ export default function TopNav() {
             className="flex items-center gap-2 border border-border/60 rounded-lg px-3 py-1.5 hover:bg-muted/40 transition-all group"
             title="Configure serial port"
           >
-            {connection.mode === "live" ? (
+            {connection.mode !== "none" ? (
               <>
                 <div className="h-2 w-2 rounded-full bg-success animate-pulse" />
-                <span className="font-mono text-xs text-success">LIVE</span>
-                <span className="font-mono text-xs text-muted-foreground">{connection.serialPort}</span>
+                <span className="font-mono text-xs text-success">{LINK_MODE_LABEL[connection.mode]}</span>
+                {connection.serialConnected && (
+                  <span className="font-mono text-xs text-muted-foreground">{connection.serialPort}</span>
+                )}
               </>
             ) : (
               <>
                 <div className="h-2 w-2 rounded-full bg-warning" />
-                <span className="font-mono text-xs text-warning">SIM</span>
+                <span className="font-mono text-xs text-warning">{LINK_MODE_LABEL.none}</span>
               </>
             )}
             <svg className="w-3 h-3 text-muted-foreground group-hover:text-foreground ml-1 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -91,15 +107,29 @@ export default function TopNav() {
           </button>
 
           {/* Mission clock */}
-          <div className="flex items-center gap-2 border-l border-border pl-4">
-            <span className="text-xs text-muted-foreground font-mono">T+</span>
-            <span className="font-mono text-lg font-semibold text-tertiary text-glow-tertiary tracking-widest">
-              {elapsedStr}
+          <button
+            onClick={() => setClockOpen(true)}
+            title={clockParts ? "Mission clock — click to adjust" : "Mission clock not started — click to set T-"}
+            className="flex items-center gap-2 border-l border-border pl-4 hover:opacity-80 transition-opacity"
+          >
+            <span className="text-xs text-muted-foreground font-mono">
+              {clockParts ? `T${clockParts.sign}` : "T"}
             </span>
-          </div>
+            <span className={`font-mono text-lg font-semibold tracking-widest ${
+              countingDown ? "text-warning" : "text-tertiary text-glow-tertiary"
+            }`}>
+              {clockParts?.text ?? "--:--:--"}
+            </span>
+          </button>
         </div>
       </nav>
 
+      <MissionClockModal
+        open={clockOpen}
+        onClose={() => setClockOpen(false)}
+        clock={missionClock}
+        payloadUptime={payloadUptime}
+      />
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </>
   );

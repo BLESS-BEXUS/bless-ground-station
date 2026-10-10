@@ -3,6 +3,7 @@ import { MapContainer, TileLayer, Marker, Polyline, Popup, useMap } from "react-
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { useLiveData } from "@/hooks/useLiveData";
+import { fmt, NO_DATA } from "@/lib/format";
 
 function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6371;
@@ -44,14 +45,21 @@ function MapFollower({ lat, lng }: { lat: number; lng: number }) {
 export default function MapPage() {
   const { telemetry: sim, groundStation } = useLiveData();
 
-  const groundDist = haversineKm(sim.latitude, sim.longitude, groundStation.lat, groundStation.lng);
-  const slantDist = slantRangeKm(groundStation.lat, groundStation.lng, groundStation.alt, sim.latitude, sim.longitude, sim.altitude);
+  const balloon: [number, number] | null =
+    sim.latitude !== null && sim.longitude !== null ? [sim.latitude, sim.longitude] : null;
+  const groundDist = balloon
+    ? haversineKm(balloon[0], balloon[1], groundStation.lat, groundStation.lng)
+    : null;
+  const slantDist = balloon
+    ? slantRangeKm(groundStation.lat, groundStation.lng, groundStation.alt,
+        balloon[0], balloon[1], sim.altitude ?? groundStation.alt)
+    : null;
 
   const trajectory: [number, number][] = sim.trajectoryHistory.map((p) => [p.lat, p.lng]);
-  const losLine: [number, number][] = [
-    [sim.latitude, sim.longitude],
-    [groundStation.lat, groundStation.lng],
-  ];
+  const losLine: [number, number][] | null = balloon
+    ? [balloon, [groundStation.lat, groundStation.lng]]
+    : null;
+  const mapCenter: [number, number] = balloon ?? [groundStation.lat, groundStation.lng];
 
   return (
     <div className="flex h-[calc(100vh-57px)]">
@@ -61,10 +69,14 @@ export default function MapPage() {
 
         <div className="space-y-3">
           <div className="text-xs font-mono text-muted-foreground uppercase tracking-wider">Balloon Position</div>
-          <DataRow label="Latitude" value={sim.latitude.toFixed(6) + "°"} />
-          <DataRow label="Longitude" value={sim.longitude.toFixed(6) + "°"} />
-          <DataRow label="Altitude" value={sim.altitude.toFixed(0) + " m"} />
-          <DataRow label="GPS Fix" value={sim.gpsFix ? `YES (${sim.gpsSats} sats)` : "NO FIX"} warn={!sim.gpsFix} />
+          <DataRow label="Latitude" value={fmt(sim.latitude, 6, "°")} />
+          <DataRow label="Longitude" value={fmt(sim.longitude, 6, "°")} />
+          <DataRow label="Altitude" value={fmt(sim.altitude, 0, "m")} />
+          <DataRow
+            label="GPS Fix"
+            value={sim.gpsFix === null ? NO_DATA : sim.gpsFix ? `YES (${sim.gpsSats} sats)` : "NO FIX"}
+            warn={sim.gpsFix === false}
+          />
         </div>
 
         <div className="border-t border-border pt-4 space-y-3">
@@ -77,37 +89,43 @@ export default function MapPage() {
 
         <div className="border-t border-border pt-4 space-y-3">
           <div className="text-xs font-mono text-muted-foreground uppercase tracking-wider">Link Geometry</div>
-          <DataRow label="Ground dist." value={groundDist.toFixed(2) + " km"} accent />
-          <DataRow label="Slant range" value={slantDist.toFixed(2) + " km"} accent />
-          <DataRow label="Phase" value={sim.halowStatus} />
+          <DataRow label="Ground dist." value={fmt(groundDist, 2, "km")} accent />
+          <DataRow label="Slant range" value={fmt(slantDist, 2, "km")} accent />
+          <DataRow label="Phase" value={sim.halowStatus ?? NO_DATA} />
         </div>
 
         <div className="border-t border-border pt-4 space-y-3">
           <div className="text-xs font-mono text-muted-foreground uppercase tracking-wider">RF</div>
-          <DataRow label="RSSI" value={sim.rssi.toFixed(1) + " dBm"} />
-          <DataRow label="SNR" value={sim.snr.toFixed(1) + " dB"} />
-          <DataRow label="PDR" value={sim.successRate + "%"} />
-          <DataRow label="Packets RX" value={String(sim.packetCount)} />
+          <DataRow label="RSSI" value={fmt(sim.rssi, 1, "dBm")} />
+          <DataRow label="SNR" value={fmt(sim.snr, 1, "dB")} />
+          <DataRow label="PDR" value={fmt(sim.successRate, 0, "%")} />
+          <DataRow label="Packets RX" value={fmt(sim.packetCount, 0)} />
         </div>
       </div>
 
       {/* Map */}
       <div className="flex-1 relative" style={{ minHeight: "400px" }}>
-        <MapContainer center={[sim.latitude, sim.longitude]} zoom={10} style={{ height: "100%", width: "100%" }} zoomControl={false}>
+        <MapContainer center={mapCenter} zoom={10} style={{ height: "100%", width: "100%" }} zoomControl={false}>
           <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-          <MapFollower lat={sim.latitude} lng={sim.longitude} />
-          <Marker position={[sim.latitude, sim.longitude]} icon={balloonIcon}>
-            <Popup>
-              <b>Balloon</b><br />
-              Alt: {sim.altitude.toFixed(0)} m<br />
-              RSSI: {sim.rssi.toFixed(1)} dBm
-            </Popup>
-          </Marker>
+          {balloon && <MapFollower lat={balloon[0]} lng={balloon[1]} />}
+          {balloon && (
+            <Marker position={balloon} icon={balloonIcon}>
+              <Popup>
+                <b>Balloon</b><br />
+                Alt: {fmt(sim.altitude, 0, "m")}<br />
+                RSSI: {fmt(sim.rssi, 1, "dBm")}
+              </Popup>
+            </Marker>
+          )}
           <Marker position={[groundStation.lat, groundStation.lng]} icon={gsIcon}>
             <Popup>{groundStation.name}</Popup>
           </Marker>
-          <Polyline positions={trajectory} pathOptions={{ color: "#A5BB86", weight: 2, opacity: 0.7 }} />
-          <Polyline positions={losLine} pathOptions={{ color: "#6AB1A7", weight: 1, dashArray: "8 4", opacity: 0.5 }} />
+          {trajectory.length > 0 && (
+            <Polyline positions={trajectory} pathOptions={{ color: "#A5BB86", weight: 2, opacity: 0.7 }} />
+          )}
+          {losLine && (
+            <Polyline positions={losLine} pathOptions={{ color: "#6AB1A7", weight: 1, dashArray: "8 4", opacity: 0.5 }} />
+          )}
         </MapContainer>
       </div>
     </div>

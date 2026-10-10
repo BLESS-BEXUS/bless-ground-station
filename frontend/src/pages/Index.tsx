@@ -1,9 +1,11 @@
 import { useNavigate } from "react-router-dom";
 import { useLiveData } from "@/hooks/useLiveData";
+import { fmt, LINK_MODE_LABEL } from "@/lib/format";
 
 export default function Index() {
   const navigate = useNavigate();
   const { connection, telemetry } = useLiveData();
+  const receiving = connection.mode !== "none";
 
   return (
     <div className="relative min-h-[calc(100vh-57px)] flex flex-col items-center justify-center overflow-hidden">
@@ -38,15 +40,17 @@ export default function Index() {
 
         {/* Connection status pill */}
         <div className={`flex items-center gap-2 border rounded-full px-5 py-2 ${
-          connection.mode === "live"
+          receiving
             ? "border-success/40 bg-success/10"
             : "border-warning/40 bg-warning/10"
         }`}>
-          <div className={`h-2 w-2 rounded-full ${connection.mode === "live" ? "bg-success animate-pulse" : "bg-warning"}`} />
-          <span className={`font-mono text-xs font-semibold ${connection.mode === "live" ? "text-success" : "text-warning"}`}>
-            {connection.mode === "live"
-              ? `LIVE · ${connection.serialPort} · ${telemetry.packetCount} packets RX`
-              : "SIMULATION MODE · backend not connected"}
+          <div className={`h-2 w-2 rounded-full ${receiving ? "bg-success animate-pulse" : "bg-warning"}`} />
+          <span className={`font-mono text-xs font-semibold ${receiving ? "text-success" : "text-warning"}`}>
+            {receiving
+              ? `${LINK_MODE_LABEL[connection.mode]} · ${fmt(telemetry.packetCount, 0)} packets RX`
+              : connection.wsConnected
+                ? "WAITING FOR PACKETS"
+                : "BACKEND NOT CONNECTED"}
           </span>
         </div>
 

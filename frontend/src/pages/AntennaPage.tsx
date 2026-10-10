@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useLiveData } from "@/hooks/useLiveData";
+import { fmt } from "@/lib/format";
 
 // ─── WGS84 / ECEF / LTC pointing computation ─────────────────────────────────
 // Implements the BEXUS User Manual Chapter 10 coordinate system.
@@ -27,7 +28,7 @@ export interface PointingResult {
 /**
  * Compute Az/El/slant-range from GS to balloon using LTC frame (BEXUS UM §10).
  * azimuth: 0-360° clockwise from North
- * elevation: 0-90° from horizon
+ * elevation: -90..90° from the local horizon (negative = target below horizon)
  */
 export function computePointingLTC(
   gsLat: number, gsLon: number, gsAlt: number,
@@ -64,7 +65,7 @@ export function computePointingLTC(
   if (azimuth < 0) azimuth += 360;
 
   const horizDist = Math.sqrt(n ** 2 + e ** 2);
-  const elevation = Math.max(0, Math.min(90, (Math.atan2(u, horizDist) * 180) / Math.PI));
+  const elevation = (Math.atan2(u, horizDist) * 180) / Math.PI;
   const slantRangeKm = Math.sqrt(dx ** 2 + dy ** 2 + dz ** 2) / 1000;
 
   return { azimuth, elevation, slantRangeKm };
@@ -72,7 +73,7 @@ export function computePointingLTC(
 
 // ─── Visuals ─────────────────────────────────────────────────────────────────
 
-function CompassVisual({ azimuth }: { azimuth: number }) {
+function CompassVisual({ azimuth }: { azimuth: number | null }) {
   return (
     <div className="relative w-52 h-52 mx-auto">
       <svg viewBox="0 0 200 200" className="w-full h-full">
@@ -107,24 +108,26 @@ function CompassVisual({ azimuth }: { azimuth: number }) {
           );
         })}
         {/* Pointer */}
-        <line
-          x1="100" y1="100"
-          x2={100 + 62 * Math.cos(((azimuth - 90) * Math.PI) / 180)}
-          y2={100 + 62 * Math.sin(((azimuth - 90) * Math.PI) / 180)}
-          stroke="#28808D" strokeWidth="3" strokeLinecap="round"
-          style={{ filter: "drop-shadow(0 0 6px #28808D99)" }}
-        />
+        {azimuth !== null && (
+          <line
+            x1="100" y1="100"
+            x2={100 + 62 * Math.cos(((azimuth - 90) * Math.PI) / 180)}
+            y2={100 + 62 * Math.sin(((azimuth - 90) * Math.PI) / 180)}
+            stroke="#28808D" strokeWidth="3" strokeLinecap="round"
+            style={{ filter: "drop-shadow(0 0 6px #28808D99)" }}
+          />
+        )}
         <circle cx="100" cy="100" r="5" fill="#28808D" />
         <text x="100" y="100" textAnchor="middle" dominantBaseline="central"
           fill="#28808D" fontSize="9" fontFamily="JetBrains Mono" dy="14">
-          {azimuth.toFixed(1)}°
+          {azimuth === null ? "—" : `${azimuth.toFixed(1)}°`}
         </text>
       </svg>
     </div>
   );
 }
 
-function ElevationArc({ elevation }: { elevation: number }) {
+function ElevationArc({ elevation }: { elevation: number | null }) {
   return (
     <div className="relative w-52 h-32 mx-auto">
       <svg viewBox="0 0 200 130" className="w-full h-full">
@@ -148,8 +151,12 @@ function ElevationArc({ elevation }: { elevation: number }) {
             </g>
           );
         })}
-        {(() => {
-          const rad = ((180 - elevation) * Math.PI) / 180;
+        {/* Horizon */}
+        <line x1="15" y1="115" x2="185" y2="115" stroke="#6AB1A733" strokeWidth="1" />
+        {elevation !== null && (() => {
+          // Value shown is the real one; only the drawn needle is limited to what fits the viewBox
+          const drawn = Math.max(-12, Math.min(90, elevation));
+          const rad = ((180 - drawn) * Math.PI) / 180;
           const cx = 100, cy = 115, r = 72;
           return (
             <>
@@ -177,14 +184,28 @@ export default function AntennaPage() {
   const [gsLon, setGsLon] = useState(groundStation.lng.toString());
   const [gsAlt, setGsAlt] = useState(groundStation.alt.toString());
 
+  // Follow coordinates saved from another browser tab; keep what is being typed otherwise.
+  useEffect(() => {
+    const sync = (text: string, saved: number) =>
+      text.trim() !== "" && Number(text) === saved ? text : saved.toString();
+    setGsLat((t) => sync(t, groundStation.lat));
+    setGsLon((t) => sync(t, groundStation.lng));
+    setGsAlt((t) => sync(t, groundStation.alt));
+  }, [groundStation.lat, groundStation.lng, groundStation.alt]);
+
   const parsedLat = Number.isFinite(parseFloat(gsLat)) ? parseFloat(gsLat) : groundStation.lat;
   const parsedLon = Number.isFinite(parseFloat(gsLon)) ? parseFloat(gsLon) : groundStation.lng;
   const parsedAlt = Number.isFinite(parseFloat(gsAlt)) ? parseFloat(gsAlt) : groundStation.alt;
 
-  const { azimuth, elevation, slantRangeKm } = computePointingLTC(
-    parsedLat, parsedLon, parsedAlt,
-    sim.latitude, sim.longitude, sim.altitude,
-  );
+  const pointing = sim.latitude !== null && sim.longitude !== null && sim.altitude !== null
+    ? computePointingLTC(
+        parsedLat, parsedLon, parsedAlt,
+        sim.latitude, sim.longitude, sim.altitude,
+      )
+    : null;
+  const azimuth = pointing?.azimuth ?? null;
+  const elevation = pointing?.elevation ?? null;
+  const slantRangeKm = pointing?.slantRangeKm ?? null;
 
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-6">
@@ -202,7 +223,7 @@ export default function AntennaPage() {
         <div className="rounded-lg border border-border bg-card p-6 text-center space-y-3">
           <span className="font-mono text-xs text-muted-foreground uppercase tracking-widest">Azimuth</span>
           <div className="font-mono text-6xl font-bold text-primary text-glow-primary">
-            {azimuth.toFixed(1)}°
+            {azimuth === null ? "—" : `${azimuth.toFixed(1)}°`}
           </div>
           <CompassVisual azimuth={azimuth} />
         </div>
@@ -210,7 +231,7 @@ export default function AntennaPage() {
         <div className="rounded-lg border border-border bg-card p-6 text-center space-y-3">
           <span className="font-mono text-xs text-muted-foreground uppercase tracking-widest">Elevation</span>
           <div className="font-mono text-6xl font-bold text-tertiary text-glow-tertiary">
-            {elevation.toFixed(1)}°
+            {elevation === null ? "—" : `${elevation.toFixed(1)}°`}
           </div>
           <ElevationArc elevation={elevation} />
         </div>
@@ -220,17 +241,20 @@ export default function AntennaPage() {
       <div className="grid grid-cols-3 gap-4">
         <div className="rounded-lg border border-border bg-card p-4 text-center">
           <div className="font-mono text-xs text-muted-foreground uppercase tracking-wider mb-1">Slant Range</div>
-          <div className="font-mono text-2xl font-bold text-secondary">{slantRangeKm.toFixed(2)} km</div>
+          <div className="font-mono text-2xl font-bold text-secondary">{fmt(slantRangeKm, 2, "km")}</div>
         </div>
         <div className="rounded-lg border border-border bg-card p-4 text-center">
           <div className="font-mono text-xs text-muted-foreground uppercase tracking-wider mb-1">Balloon Alt.</div>
-          <div className="font-mono text-2xl font-bold text-foreground">{sim.altitude.toFixed(0)} m</div>
+          <div className="font-mono text-2xl font-bold text-foreground">{fmt(sim.altitude, 0, "m")}</div>
         </div>
         <div className="rounded-lg border border-border bg-card p-4 text-center">
           <div className="font-mono text-xs text-muted-foreground uppercase tracking-wider mb-1">RSSI</div>
           <div className={`font-mono text-2xl font-bold ${
-            sim.halowStatus === "ACTIVE" ? "text-success" : sim.halowStatus === "DEGRADED" ? "text-warning" : "text-destructive"
-          }`}>{sim.rssi.toFixed(1)} dBm</div>
+            sim.halowStatus === "ACTIVE" ? "text-success"
+            : sim.halowStatus === "DEGRADED" ? "text-warning"
+            : sim.halowStatus === "INTERRUPTED" ? "text-destructive"
+            : "text-muted-foreground"
+          }`}>{fmt(sim.rssi, 1, "dBm")}</div>
         </div>
       </div>
 
@@ -253,8 +277,9 @@ export default function AntennaPage() {
                 onChange={(e) => {
                   const value = e.target.value;
                   set(value);
+                  // An empty or incomplete field must not overwrite the saved value with 0.
                   const parsed = Number(value);
-                  if (Number.isFinite(parsed)) {
+                  if (value.trim() !== "" && Number.isFinite(parsed)) {
                     setGroundStation({ ...groundStation, [field]: parsed });
                   }
                 }}
@@ -265,6 +290,10 @@ export default function AntennaPage() {
             </div>
           ))}
         </div>
+        <p className="font-mono text-xs text-muted-foreground/70">
+          Saved automatically in this browser for {window.location.origin}. Opening the app from a
+          different address or port starts again from the defaults.
+        </p>
       </div>
 
       {/* Computation inputs summary */}
@@ -274,9 +303,9 @@ export default function AntennaPage() {
         </h3>
         <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
           {[
-            { label: "Balloon Lat", value: sim.latitude.toFixed(6) + "°" },
-            { label: "Balloon Lon", value: sim.longitude.toFixed(6) + "°" },
-            { label: "Balloon Alt", value: sim.altitude.toFixed(0) + " m" },
+            { label: "Balloon Lat", value: fmt(sim.latitude, 6, "°") },
+            { label: "Balloon Lon", value: fmt(sim.longitude, 6, "°") },
+            { label: "Balloon Alt", value: fmt(sim.altitude, 0, "m") },
             { label: "GS Lat", value: parsedLat.toFixed(6) + "°" },
             { label: "GS Lon", value: parsedLon.toFixed(6) + "°" },
             { label: "GS Alt", value: parsedAlt.toFixed(0) + " m" },

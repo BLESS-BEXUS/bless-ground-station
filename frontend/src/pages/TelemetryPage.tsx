@@ -1,15 +1,17 @@
 import { useLiveData } from "@/hooks/useLiveData";
 import { decodeTelemetryErrors } from "@/lib/telemetryErrors";
+import { fmt } from "@/lib/format";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, Legend,
 } from "recharts";
 
-function StatusDot({ status }: { status: "nominal" | "warning" | "critical" }) {
+function StatusDot({ status }: { status: "nominal" | "warning" | "critical" | "idle" }) {
   const cls =
     status === "nominal" ? "bg-success glow-secondary"
     : status === "warning" ? "bg-warning glow-warning"
-    : "bg-destructive glow-destructive";
+    : status === "critical" ? "bg-destructive glow-destructive"
+    : "bg-muted-foreground/40";
   return <div className={`h-2.5 w-2.5 rounded-full ${cls}`} />;
 }
 
@@ -27,10 +29,10 @@ function getStatus(label: string, value: number): "nominal" | "warning" | "criti
 }
 
 function TelemetryCard({ label, value, unit, decimals = 2 }: {
-  label: string; value: number; unit: string; decimals?: number;
+  label: string; value: number | null; unit: string; decimals?: number;
 }) {
-  const status = getStatus(label, value);
-  const display = Math.abs(value) > 9999 ? value.toFixed(0) : value.toFixed(decimals);
+  const status = value === null ? "idle" : getStatus(label, value);
+  const display = fmt(value, decimals);
   return (
     <div className="rounded-lg border border-border bg-card p-4 flex flex-col gap-2">
       <div className="flex items-center justify-between">
@@ -52,15 +54,18 @@ export default function TelemetryPage() {
   const halowColor =
     sim.halowStatus === "ACTIVE" ? "text-success"
     : sim.halowStatus === "DEGRADED" ? "text-warning"
-    : "text-destructive";
+    : sim.halowStatus === "INTERRUPTED" ? "text-destructive"
+    : "text-muted-foreground";
   const halowBg =
     sim.halowStatus === "ACTIVE" ? "bg-success"
     : sim.halowStatus === "DEGRADED" ? "bg-warning"
-    : "bg-destructive";
+    : sim.halowStatus === "INTERRUPTED" ? "bg-destructive"
+    : "bg-muted-foreground/40";
   const halowBorder =
     sim.halowStatus === "ACTIVE" ? "border-success/30"
     : sim.halowStatus === "DEGRADED" ? "border-warning/30"
-    : "border-destructive/30";
+    : sim.halowStatus === "INTERRUPTED" ? "border-destructive/30"
+    : "border-border";
 
   const errorBits = decodeTelemetryErrors(sim.errorFlags);
 
@@ -72,15 +77,15 @@ export default function TelemetryPage() {
         <div className="flex items-center gap-3">
           <div className={`h-3 w-3 rounded-full ${halowBg} animate-pulse-glow`} />
           <span className="font-mono text-sm text-muted-foreground">Wi-Fi HaLow Link</span>
-          <span className={`font-mono text-lg font-bold ${halowColor}`}>{sim.halowStatus}</span>
+          <span className={`font-mono text-lg font-bold ${halowColor}`}>{sim.halowStatus ?? "NO DATA"}</span>
         </div>
         <div className="flex gap-6 flex-wrap">
-          <Stat label="RSSI" value={`${sim.rssi.toFixed(1)} dBm`} />
-          <Stat label="SNR" value={`${sim.snr.toFixed(1)} dB`} />
-          <Stat label="PDR" value={`${sim.successRate}%`} />
-          <Stat label="Noise Floor" value={`${sim.noiseFloor.toFixed(1)} dBm`} />
-          <Stat label="MCS" value={`${sim.txMcs}`} />
-          <Stat label="Freq Dev" value={`${sim.freqDevHz} Hz`} />
+          <Stat label="RSSI" value={fmt(sim.rssi, 1, "dBm")} />
+          <Stat label="SNR" value={fmt(sim.snr, 1, "dB")} />
+          <Stat label="PDR" value={fmt(sim.successRate, 0, "%")} />
+          <Stat label="Noise Floor" value={fmt(sim.noiseFloor, 1, "dBm")} />
+          <Stat label="MCS" value={fmt(sim.txMcs, 0)} />
+          <Stat label="Freq Dev" value={fmt(sim.freqDevHz, 0, "Hz")} />
         </div>
       </div>
 
@@ -100,7 +105,7 @@ export default function TelemetryPage() {
       <div>
         <h3 className="font-mono text-xs text-muted-foreground uppercase tracking-wider mb-3">Hardware / Power</h3>
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
-          <TelemetryCard label="System State" value={sim.systemState} unit={sim.systemStateLabel} decimals={0} />
+          <TelemetryCard label="System State" value={sim.systemState} unit={sim.systemStateLabel ?? ""} decimals={0} />
           <TelemetryCard label="HaLow I" value={sim.halowCurrMa} unit="mA" decimals={0} />
           <TelemetryCard label="Chip Temp" value={sim.chipTempC} unit="°C" decimals={0} />
           <TelemetryCard label="Heater" value={sim.heaterPower} unit="%" decimals={2} />
@@ -112,13 +117,13 @@ export default function TelemetryPage() {
       {/* GNSS + Error status */}
       <div className="flex gap-4 flex-wrap">
         <div className="rounded-lg border border-border bg-card px-4 py-3 flex items-center gap-3">
-          <div className={`h-2.5 w-2.5 rounded-full ${sim.gpsFix ? "bg-success" : "bg-destructive"}`} />
+          <div className={`h-2.5 w-2.5 rounded-full ${sim.gpsFix === null ? "bg-muted-foreground/40" : sim.gpsFix ? "bg-success" : "bg-destructive"}`} />
           <span className="font-mono text-xs text-muted-foreground">GPS Fix</span>
-          <span className="font-mono text-sm text-foreground">{sim.gpsFix ? `YES (${sim.gpsSats} sats)` : "NO FIX"}</span>
+          <span className="font-mono text-sm text-foreground">{sim.gpsFix === null ? "—" : sim.gpsFix ? `YES (${sim.gpsSats} sats)` : "NO FIX"}</span>
         </div>
         <div className="rounded-lg border border-border bg-card px-4 py-3 flex items-center gap-3">
           <span className="font-mono text-xs text-muted-foreground">Packets RX</span>
-          <span className="font-mono text-sm text-foreground">{sim.packetCount}</span>
+          <span className="font-mono text-sm text-foreground">{fmt(sim.packetCount, 0)}</span>
         </div>
         {errorBits && (
           <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 flex items-center gap-3">
