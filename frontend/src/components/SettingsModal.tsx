@@ -20,11 +20,24 @@ export default function SettingsModal({ open, onClose }: Props) {
     listPorts().then(setPorts);
   }, [open, connection.serialPort, listPorts]);
 
+  // A port that is plugged in while this dialog is open shows up without pressing Refresh
+  useEffect(() => {
+    if (!open) return;
+    const id = window.setInterval(() => { listPorts().then(setPorts); }, 2000);
+    return () => window.clearInterval(id);
+  }, [open, listPorts]);
+
+  // Re-selecting the current port is how you reconnect it after unplugging the module
+  const isReconnect = selected === connection.serialPort && !connection.serialConnected;
+  const nothingToDo = selected === connection.serialPort && connection.serialConnected;
+
   async function apply() {
     setLoading(true);
     setStatus(null);
     const res = await changePort(selected);
-    setStatus(res.ok ? { ok: true, msg: `Switching to ${selected}…` } : { ok: false, msg: res.error ?? "Error" });
+    setStatus(res.ok
+      ? { ok: true, msg: `${isReconnect ? "Reconnecting" : "Switching to"} ${selected}…` }
+      : { ok: false, msg: res.error ?? "Error" });
     setLoading(false);
     if (res.ok) setTimeout(onClose, 1200);
   }
@@ -56,6 +69,13 @@ export default function SettingsModal({ open, onClose }: Props) {
             {connection.serialConnected ? "CONNECTED" : "DISCONNECTED"}
           </span>
         </div>
+
+        {!connection.serialConnected && (
+          <p className="font-mono text-xs text-muted-foreground">
+            The backend retries by itself every few seconds, so plugging the module back in is
+            enough. Press Reconnect to retry right now.
+          </p>
+        )}
 
         {/* Port selector */}
         <div className="space-y-2">
@@ -116,14 +136,14 @@ export default function SettingsModal({ open, onClose }: Props) {
           </button>
           <button
             onClick={apply}
-            disabled={loading || selected === connection.serialPort}
+            disabled={loading || nothingToDo}
             className={`flex-1 px-4 py-2 rounded-lg font-mono text-xs font-semibold transition-all ${
-              loading || selected === connection.serialPort
+              loading || nothingToDo
                 ? "bg-primary/20 text-primary/40 cursor-not-allowed"
                 : "bg-primary/20 text-primary border border-primary/40 hover:bg-primary/30"
             }`}
           >
-            {loading ? "Applying…" : "Apply"}
+            {loading ? "Applying…" : isReconnect ? "Reconnect" : "Apply"}
           </button>
         </div>
       </div>

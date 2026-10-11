@@ -7,6 +7,8 @@ import React, {
   useRef,
 } from "react";
 import { LINK_FRESHNESS_MS, selectTelemetrySource } from "@/lib/linkSelection";
+import { HTTP_URL, WS_URL } from "@/lib/backendUrl";
+import { normalizeRoutePoint, type RoutePoint } from "@/lib/route";
 import {
   GROUND_STATION_STORAGE_KEY,
   loadGroundStation,
@@ -93,6 +95,9 @@ interface LiveDataContextValue {
   logging: boolean;
   groundStation: GroundStationLocation;
   setGroundStation: (location: GroundStationLocation) => void;
+  /** Payload GNSS route recorded by the backend, point by point. */
+  route: RoutePoint[];
+  clearRoute: () => Promise<boolean>;
   toggleLogging: () => Promise<void>;
   sendCommand: (cmd: string, params?: number[]) => Promise<CommandResult>;
   changePort: (port: string) => Promise<{ ok: boolean; error?: string }>;
@@ -133,6 +138,9 @@ const INITIAL_TELEMETRY: TelemetryData = {
   trajectoryHistory: [],
 };
 
+// The route on the map comes from the backend; this short history is only used to spot jumps.
+const MAX_TRAJECTORY_POINTS = 5000;
+
 function mergePacket(prev: TelemetryData, d: TelemetryData): TelemetryData {
   const lat = d.latitude;
   const lng = d.longitude;
@@ -155,7 +163,7 @@ function mergePacket(prev: TelemetryData, d: TelemetryData): TelemetryData {
           lat,
           lng,
           alt: d.altitude ?? 0,
-        }]
+        }].slice(-MAX_TRAJECTORY_POINTS)
       : prev.trajectoryHistory,
   };
 }
@@ -165,14 +173,13 @@ function mergePacket(prev: TelemetryData, d: TelemetryData): TelemetryData {
 // Longer than the slowest downlink period (HaLow, ~10 s) so the mode does not flap.
 const LIVE_TIMEOUT_MS = 30_000;
 
-const BACKEND_HOST = window.location.hostname;
-const WS_URL = `ws://${BACKEND_HOST}:8765`;
-const HTTP_URL = `http://${BACKEND_HOST}:8765`;
+const MAX_ROUTE_POINTS = 20_000;
 
 export function LiveDataProvider({ children }: { children: React.ReactNode }) {
   const [telemetry, setTelemetry] = useState<TelemetryData>(INITIAL_TELEMETRY);
   const [elinkTelemetry, setElinkTelemetry] = useState<TelemetryData>(INITIAL_TELEMETRY);
   const [logging, setLogging] = useState(false);
+  const [route, setRoute] = useState<RoutePoint[]>([]);
   const [groundStation, setGroundStationState] = useState<GroundStationLocation>(loadGroundStation);
   const loggingRef = useRef(false);
   const [connection, setConnection] = useState<ConnectionState>({
@@ -236,6 +243,15 @@ export function LiveDataProvider({ children }: { children: React.ReactNode }) {
         if (msg.type === "logging") {
           loggingRef.current = msg.active as boolean;
           setLogging(msg.active as boolean);
+        }
+
+        if (msg.type === "route" && Array.isArray(msg.points)) {
+          setRoute((msg.points as RoutePoint[]).slice(-MAX_ROUTE_POINTS).map(normalizeRoutePoint));
+        }
+
+        if (msg.type === "route_point" && msg.point) {
+          const point = normalizeRoutePoint(msg.point as RoutePoint);
+          setRoute((prev) => [...prev, point].slice(-MAX_ROUTE_POINTS));
         }
 
         if (msg.type === "elink_connection") {
@@ -392,6 +408,15 @@ export function LiveDataProvider({ children }: { children: React.ReactNode }) {
     await fetch(`${HTTP_URL}${endpoint}`, { method: "POST" }).catch(() => {});
   }, []);
 
+  const clearRoute = useCallback(async (): Promise<boolean> => {
+    try {
+      const res = await fetch(`${HTTP_URL}/route/clear`, { method: "POST" });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }, []);
+
   const changeElinkPort = useCallback(async (newPort: string): Promise<{ ok: boolean; error?: string }> => {
     try {
       const res = await fetch(`${HTTP_URL}/config/elink`, {
@@ -422,6 +447,8 @@ export function LiveDataProvider({ children }: { children: React.ReactNode }) {
       logging,
       groundStation,
       setGroundStation,
+      route,
+      clearRoute,
       toggleLogging,
       sendCommand,
       changePort,

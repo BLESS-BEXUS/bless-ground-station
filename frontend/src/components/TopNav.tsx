@@ -12,6 +12,7 @@ const navItems = [
   { to: "/elink", label: "E-Link" },
   { to: "/map", label: "Map & Tracking" },
   { to: "/antenna", label: "Antenna Pointing" },
+  { to: "/ground-halow", label: "GS Config" },
 ];
 
 export default function TopNav() {

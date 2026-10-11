@@ -10,6 +10,7 @@ import TelemetryPage from "@/pages/TelemetryPage";
 import ELinkPage from "@/pages/ELinkPage";
 import MapPage from "@/pages/MapPage";
 import AntennaPage from "@/pages/AntennaPage";
+import GroundRadioPage from "@/pages/GroundRadioPage";
 import NotFound from "./pages/NotFound.tsx";
 
 const queryClient = new QueryClient();
@@ -28,6 +29,7 @@ const App = () => (
             <Route path="/elink" element={<ELinkPage />} />
             <Route path="/map" element={<MapPage />} />
             <Route path="/antenna" element={<AntennaPage />} />
+            <Route path="/ground-halow" element={<GroundRadioPage />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </BrowserRouter>
