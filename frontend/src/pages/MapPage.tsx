@@ -259,7 +259,9 @@ export default function MapPage() {
       </div>
 
       {/* Map */}
-      <div className="flex-1 relative" style={{ minHeight: "400px" }}>
+      {/* `isolate`: Leaflet's panes use z-index 400-1000, which would otherwise paint over
+          the dialogs of the top bar (serial port, mission clock). */}
+      <div className="flex-1 relative isolate" style={{ minHeight: "400px" }}>
         {/* Map mode: the standard map is the default */}
         <div className="absolute top-4 left-4 z-[1000] flex flex-wrap items-center gap-2">
           <div className="flex rounded-lg border border-border overflow-hidden bg-card/90 font-mono text-xs">

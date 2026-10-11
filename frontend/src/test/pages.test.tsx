@@ -273,6 +273,12 @@ describe("map page", () => {
   const lines = () => screen.queryAllByTestId("polyline");
   const colors = () => lines().map((l) => l.getAttribute("data-color"));
 
+  it("keeps Leaflet's layers inside their own stacking context, below the top-bar dialogs", () => {
+    renderMap();
+    // Leaflet panes use z-index 400-1000; without isolation they paint over a z-50 dialog
+    expect(screen.getByTestId("map").parentElement?.className).toMatch(/isolate/);
+  });
+
   it("loads its tiles from the backend cache", () => {
     renderMap();
     expect(screen.getByTestId("tile-layer").getAttribute("data-url")).toMatch(/:8765\/tiles\/\{z\}\/\{x\}\/\{y\}\.png$/);
