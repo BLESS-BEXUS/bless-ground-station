@@ -13,12 +13,22 @@ import {
   CMD,
   PACKET_SIZE,
 } from "./protocol";
-import type { CmdId } from "./protocol";
+import type { BlessPacket, CmdId } from "./protocol";
 import { MissionEventLogger, MissionLogger } from "./logger";
+import { RouteTracker } from "./track";
+import type { RouteLink } from "./track";
+import { TileCache, handleTileRequest } from "./tiles";
+import {
+  AtCommandChannel,
+  GROUND_AT_COMMANDS,
+  displayValue,
+  validateAtCommand,
+} from "./halowAt";
+import type { AtResult, GroundAtCommand } from "./halowAt";
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
-const WS_PORT = 8765;
+const WS_PORT = Number(process.env.WS_PORT ?? 8765);
 let halowPort = process.env.HALOW_PORT ?? "COM3";
 let elinkPort = process.env.ELINK_PORT ?? "";
 const BAUD_RATE = 115200;
@@ -52,6 +62,20 @@ const elinkLogger = new MissionLogger(
 const missionEventLogger = new MissionEventLogger("./logs", "mission_events.csv");
 halowLogger.open();
 elinkLogger.open();
+
+// Payload GNSS route (shared by every connected UI, kept across page reloads and restarts)
+// HaLow GNSS counts as "being received" for this long after the last HaLow packet
+const ROUTE_HALOW_WINDOW_MS = Number(process.env.ROUTE_HALOW_WINDOW_MS ?? 30_000);
+const routeTracker = new RouteTracker(path.resolve("./logs/route.ndjson"), ROUTE_HALOW_WINDOW_MS);
+routeTracker.load();
+
+// Map tiles are fetched once and then served from disk (works offline afterwards)
+const tileCache = new TileCache(path.resolve(process.env.TILE_CACHE_DIR ?? "./tiles"));
+
+function recordRoute(packet: BlessPacket, via: RouteLink): void {
+  const point = routeTracker.record(packet, via);
+  if (point) broadcast({ type: "route_point", point });
+}
 
 function startLogging(): void {
   if (!halowLogger.isActive()) {
@@ -101,10 +125,46 @@ let halowSerial: SerialPort | null = null;
 let halowRxCount = 0;
 let halowBuf = Buffer.alloc(0);
 let halowPendingLen = 0;
+let halowPendingSince = 0;
 let halowAutoReconnect = true;
 let lastHalowPacketAt = 0;
 
+// AT commands for the ground-station T-HaLow (same interface the payload uses on its own)
+const groundAt = new AtCommandChannel((data) => {
+  if (!halowSerial?.isOpen) throw new Error("HaLow serial port is not open");
+  halowSerial.write(data);
+});
+const groundAtHistory: AtResult[] = [];
+const groundAtApplied: Partial<Record<GroundAtCommand, { value: string; at: string }>> = {};
+const GROUND_AT_HISTORY_LIMIT = 100;
+
+async function runGroundAtCommand(name: GroundAtCommand, value: string): Promise<AtResult> {
+  const result = await groundAt.send(name, value);
+  groundAtHistory.push(result);
+  if (groundAtHistory.length > GROUND_AT_HISTORY_LIMIT) groundAtHistory.shift();
+  if (result.ok) groundAtApplied[name] = { value: result.value, at: result.finishedAt };
+  missionEventLogger.writeGroundRadioConfig({
+    status: result.ok ? "OK" : "FAILED",
+    setting: `${name}=${displayValue(name, value)}`,
+    sentUtc: result.sentAt,
+    finishedUtc: result.finishedAt,
+  });
+  console.log(`[halow-at] AT+${name}=${result.value} -> ${result.ok ? "OK" : `FAILED (${result.error})`}`);
+  return result;
+}
+
+// Largest frame the module can announce (Ethernet MTU + header), and how long a
+// half-received frame may wait before it is given up on.
+const MAX_HALOW_FRAME_BYTES = 1600;
+const HALOW_FRAME_TIMEOUT_MS = 2000;
+
 function processHalowData(): void {
+  // A frame that never completes (module reset mid-frame) must not swallow what follows
+  if (halowPendingLen > 0 && Date.now() - halowPendingSince > HALOW_FRAME_TIMEOUT_MS) {
+    console.warn(`[halow] Dropping incomplete ${halowPendingLen}-byte frame`);
+    halowPendingLen = 0;
+  }
+
   while (halowBuf.length > 0) {
     if (halowPendingLen > 0) {
       if (halowBuf.length < halowPendingLen) return;
@@ -127,6 +187,7 @@ function processHalowData(): void {
           packet.gsMcs = gsRfStats.mcs;
           autoStartLogging();
           halowLogger.write(packet);
+          recordRoute(packet, "halow");
           broadcast({ type: "telemetry", data: packet });
           console.log(`[halow] #${halowRxCount} alt=${packet.altitude}m rssi=${packet.rssi}dBm gsRssi=${gsRfStats.rssi}`);
         } else {
@@ -146,8 +207,19 @@ function processHalowData(): void {
     halowBuf = halowBuf.slice(nlIdx + 1);
     if (!line) continue;
 
-    const rxMatch = line.match(/^\+RXDATA:(\d+)$/);
-    if (rxMatch) { halowPendingLen = parseInt(rxMatch[1]); continue; }
+    // Not anchored at the start: noise from a cut frame may precede the announcement
+    const rxMatch = line.match(/\+RXDATA:(\d+)$/);
+    if (rxMatch) {
+      const announced = parseInt(rxMatch[1], 10);
+      if (announced > 0 && announced <= MAX_HALOW_FRAME_BYTES) {
+        halowPendingLen = announced;
+        halowPendingSince = Date.now();
+      } else {
+        console.warn(`[halow] Ignoring implausible frame length +RXDATA:${rxMatch[1]}`);
+      }
+      continue;
+    }
+    if (groundAt.handleLine(line)) continue;
     if (line.startsWith("rx0:")) parseRx0Line(line);
     else if (line.startsWith("tx0:")) parseTx0Line(line);
   }
@@ -157,6 +229,29 @@ function halowDisabled(port: string): boolean {
   return ["", "none", "off", "disabled"].includes(port.trim().toLowerCase());
 }
 
+const HALOW_RECONNECT_MS = 3000;
+let halowReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let halowLastError = "";
+
+function clearHalowReconnect(): void {
+  if (halowReconnectTimer) {
+    clearTimeout(halowReconnectTimer);
+    halowReconnectTimer = null;
+  }
+}
+
+/**
+ * Retry opening the port. Only one retry can be pending, so a manual reconnect and
+ * the automatic one never race, and it keeps trying while the cable is out.
+ */
+function scheduleHalowReconnect(): void {
+  if (!halowAutoReconnect || halowReconnectTimer || halowDisabled(halowPort)) return;
+  halowReconnectTimer = setTimeout(() => {
+    halowReconnectTimer = null;
+    openHalow();
+  }, HALOW_RECONNECT_MS);
+}
+
 function openHalow(): void {
   if (halowDisabled(halowPort)) {
     console.log("[halow] Disabled (HALOW_PORT=none): E-Link-only ground station");
@@ -164,37 +259,64 @@ function openHalow(): void {
     broadcast({ type: "connection", serial: false, port: halowPort, disabled: true });
     return;
   }
-  console.log(`[halow] Opening ${halowPort} at ${BAUD_RATE} baud`);
+  clearHalowReconnect();
+  if (halowSerial?.isOpen) return;   // already open: nothing to do
+
+  if (!halowLastError) console.log(`[halow] Opening ${halowPort} at ${BAUD_RATE} baud`);
   halowAutoReconnect = true;
-  halowSerial = new SerialPort({ path: halowPort, baudRate: BAUD_RATE });
-  halowSerial.on("open", () => {
+  const port = new SerialPort({ path: halowPort, baudRate: BAUD_RATE });
+  halowSerial = port;
+
+  port.on("open", () => {
+    if (halowSerial !== port) {   // replaced while it was opening: do not keep the handle
+      port.close();
+      return;
+    }
+    halowLastError = "";
     halowConnected = true;
+    halowBuf = Buffer.alloc(0);   // never continue a frame cut by the unplug
+    halowPendingLen = 0;
     console.log("[halow] Port open");
     broadcast({ type: "connection", serial: true, port: halowPort });
   });
-  halowSerial.on("data", (chunk: Buffer) => {
+  port.on("data", (chunk: Buffer) => {
+    if (halowSerial !== port) return;
     halowBuf = Buffer.concat([halowBuf, chunk]);
     processHalowData();
   });
-  halowSerial.on("error", (err) => {
-    console.error("[halow] Error:", err.message);
+  port.on("error", (err) => {
+    if (halowSerial !== port) return;
     halowConnected = false;
-    broadcast({ type: "connection", serial: false, error: err.message });
+    // Say it once per outage, not on every retry
+    if (err.message !== halowLastError) {
+      console.error("[halow] Error:", err.message, `(retrying every ${HALOW_RECONNECT_MS / 1000} s)`);
+    }
+    halowLastError = err.message;
+    broadcast({ type: "connection", serial: false, port: halowPort, error: err.message });
+    if (!port.isOpen) scheduleHalowReconnect();   // could not open: cable out or port busy
   });
-  halowSerial.on("close", () => {
+  port.on("close", () => {
+    if (halowSerial !== port) return;
     halowConnected = false;
+    groundAt.abortAll("HaLow serial port closed");
     console.warn("[halow] Port closed");
     broadcast({ type: "connection", serial: false, port: halowPort });
-    if (halowAutoReconnect) setTimeout(openHalow, 5000);
+    scheduleHalowReconnect();
   });
 }
 
 function closeHalow(): Promise<void> {
   return new Promise((resolve) => {
     halowAutoReconnect = false;
+    clearHalowReconnect();
+    halowLastError = "";
     halowBuf = Buffer.alloc(0);
-    if (halowSerial?.isOpen) halowSerial.close(() => { halowSerial = null; resolve(); });
-    else { halowSerial = null; resolve(); }
+    halowPendingLen = 0;
+    const port = halowSerial;
+    halowSerial = null;
+    halowConnected = false;
+    if (port?.isOpen) port.close(() => resolve());
+    else resolve();
   });
 }
 
@@ -205,6 +327,15 @@ let elinkSerial: SerialPort | null = null;
 let elinkRxCount = 0;
 let elinkBuf = Buffer.alloc(0);
 let elinkAutoReconnect = true;
+let elinkReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleElinkReconnect(): void {
+  if (!elinkAutoReconnect || elinkReconnectTimer || !elinkPort) return;
+  elinkReconnectTimer = setTimeout(() => {
+    elinkReconnectTimer = null;
+    openElink();
+  }, 5000);
+}
 
 function processElinkData(): void {
   while (elinkBuf.length >= PACKET_SIZE) {
@@ -229,37 +360,49 @@ function processElinkData(): void {
 
 function openElink(): void {
   if (!elinkPort) return;
+  if (elinkReconnectTimer) { clearTimeout(elinkReconnectTimer); elinkReconnectTimer = null; }
+  if (elinkSerial?.isOpen) return;
   console.log(`[elink] Opening ${elinkPort} at ${BAUD_RATE} baud`);
   elinkAutoReconnect = true;
-  elinkSerial = new SerialPort({ path: elinkPort, baudRate: BAUD_RATE });
-  elinkSerial.on("open", () => {
+  const port = new SerialPort({ path: elinkPort, baudRate: BAUD_RATE });
+  elinkSerial = port;
+  port.on("open", () => {
+    if (elinkSerial !== port) { port.close(); return; }
     elinkConnected = true;
     console.log("[elink] Port open");
     publishElinkConnection();
   });
-  elinkSerial.on("data", (chunk: Buffer) => {
+  port.on("data", (chunk: Buffer) => {
+    if (elinkSerial !== port) return;
     elinkBuf = Buffer.concat([elinkBuf, chunk]);
     processElinkData();
   });
-  elinkSerial.on("error", (err) => {
+  port.on("error", (err) => {
+    if (elinkSerial !== port) return;
     console.error("[elink] Error:", err.message);
     elinkConnected = false;
     publishElinkConnection();
+    if (!port.isOpen) scheduleElinkReconnect();   // could not open: retry like the HaLow port
   });
-  elinkSerial.on("close", () => {
+  port.on("close", () => {
+    if (elinkSerial !== port) return;
     elinkConnected = false;
     console.warn("[elink] Port closed");
     publishElinkConnection();
-    if (elinkAutoReconnect) setTimeout(openElink, 5000);
+    scheduleElinkReconnect();
   });
 }
 
 function closeElink(): Promise<void> {
   return new Promise((resolve) => {
     elinkAutoReconnect = false;
+    if (elinkReconnectTimer) { clearTimeout(elinkReconnectTimer); elinkReconnectTimer = null; }
     elinkBuf = Buffer.alloc(0);
-    if (elinkSerial?.isOpen) elinkSerial.close(() => { elinkSerial = null; resolve(); });
-    else { elinkSerial = null; resolve(); }
+    const port = elinkSerial;
+    elinkSerial = null;
+    elinkConnected = false;
+    if (port?.isOpen) port.close(() => resolve());
+    else resolve();
   });
 }
 
@@ -348,6 +491,7 @@ function handleElinkTelemetry(frame: Buffer): boolean {
   lastElinkActivityAt = Date.now();
   autoStartLogging();
   elinkLogger.write(packet);
+  recordRoute(packet, "elink");
   broadcast({ type: "elink_telemetry", data: packet });
   console.log(`[elink] #${elinkRxCount} alt=${packet.altitude}m rssi=${packet.rssi}dBm`);
   return true;
@@ -493,6 +637,64 @@ function openElinkUdp(): void {
 
 // ─── WebSocket ────────────────────────────────────────────────────────────────
 
+const MAX_BODY_BYTES = 64 * 1024;
+
+class BadRequestError extends Error {}
+
+/** Reads a small request body; answers 413 and discards anything larger. */
+function readBody(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  onBody: (body: string) => void | Promise<void>,
+): void {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  let tooLarge = false;
+  req.on("data", (chunk: Buffer) => {
+    if (tooLarge) return;
+    size += chunk.length;
+    if (size > MAX_BODY_BYTES) {
+      tooLarge = true;
+      chunks.length = 0;
+      res.writeHead(413, {
+        "Access-Control-Allow-Origin": "*",
+        "Content-Type": "application/json",
+        Connection: "close",
+      });
+      res.end(JSON.stringify({ ok: false, error: "Request body too large" }));
+      return;
+    }
+    chunks.push(chunk);
+  });
+  req.on("end", () => {
+    if (tooLarge) return;
+    Promise.resolve(onBody(Buffer.concat(chunks).toString("utf-8"))).catch((error: unknown) => {
+      if (res.headersSent) return;
+      res.writeHead(500, { "Access-Control-Allow-Origin": "*", "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+    });
+  });
+}
+
+/** `{ "params": [a, b] }` -> up to two bytes, as the payload command frame carries. */
+function parseCommandParams(body: string): number[] {
+  if (!body.trim()) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    throw new BadRequestError("Request body must be valid JSON");
+  }
+  const params = (parsed as { params?: unknown } | null)?.params ?? [];
+  if (
+    !Array.isArray(params) || params.length > 2
+    || params.some((v) => !Number.isInteger(v) || v < 0 || v > 255)
+  ) {
+    throw new BadRequestError("params must be up to 2 whole numbers between 0 and 255");
+  }
+  return params as number[];
+}
+
 const httpServer = http.createServer((req, res) => {
   const cors = { "Access-Control-Allow-Origin": "*", "Content-Type": "application/json" };
 
@@ -501,13 +703,80 @@ const httpServer = http.createServer((req, res) => {
     res.end(); return;
   }
 
+  // Map tiles: served from the local disk cache, downloaded once when missing.
+  if (req.url?.startsWith("/tiles/")) {
+    if (req.method !== "GET") {
+      res.writeHead(405, { "Access-Control-Allow-Origin": "*", Allow: "GET" });
+      res.end();
+      return;
+    }
+    void handleTileRequest(req, res, tileCache);
+    return;
+  }
+
+  // Ground-station HaLow module: current state and what was applied this session
+  if (req.method === "GET" && req.url === "/halow/config") {
+    res.writeHead(200, cors);
+    res.end(JSON.stringify({
+      connected: halowConnected,
+      disabled: halowDisabled(halowPort),
+      port: halowPort,
+      commands: GROUND_AT_COMMANDS,
+      applied: groundAtApplied,
+      history: groundAtHistory,
+    }));
+    return;
+  }
+
+  // Run one AT command on the ground-station HaLow module
+  if (req.method === "POST" && req.url === "/halow/config") {
+    readBody(req, res, async (body) => {
+      try {
+        const { name, value } = JSON.parse(body || "{}") as { name?: string; value?: string | number };
+        const checked = validateAtCommand(String(name ?? ""), String(value ?? ""));
+        if (!checked.ok) {
+          res.writeHead(400, cors); res.end(JSON.stringify({ ok: false, error: checked.error })); return;
+        }
+        if (halowDisabled(halowPort) || !halowConnected) {
+          res.writeHead(503, cors);
+          res.end(JSON.stringify({
+            ok: false,
+            error: halowDisabled(halowPort)
+              ? "This ground station has no HaLow module (HALOW_PORT=none)"
+              : `HaLow serial port ${halowPort} is not open`,
+          }));
+          return;
+        }
+        const result = await runGroundAtCommand(name as GroundAtCommand, checked.value);
+        res.writeHead(200, cors);
+        res.end(JSON.stringify(result));
+      } catch (error) {
+        res.writeHead(400, cors);
+        res.end(JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+      }
+    });
+    return;
+  }
+
+  if (req.method === "GET" && req.url === "/route") {
+    res.writeHead(200, cors);
+    res.end(JSON.stringify(routeTracker.list()));
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/route/clear") {
+    routeTracker.clear();
+    broadcast({ type: "route", points: [] });
+    res.writeHead(200, cors);
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
   // Send command through the E-Link UDP network.
   if (req.method === "POST" && req.url?.startsWith("/cmd/")) {
     const cmdName = req.url.slice(5).toUpperCase() as keyof typeof CMD;
     if (!(cmdName in CMD)) { res.writeHead(400, cors); res.end(JSON.stringify({ error: "Unknown command" })); return; }
-    let body = "";
-    req.on("data", (c) => (body += c));
-    req.on("end", async () => {
+    readBody(req, res, async (body) => {
       try {
         if (cmdName === "PING") {
           const result = await sendPing();
@@ -527,7 +796,7 @@ const httpServer = http.createServer((req, res) => {
           throw new Error("SYNC_TIME confirmation pending; wait before sending another command");
         }
 
-        const params: number[] = body ? (JSON.parse(body).params ?? []) : [];
+        const params = parseCommandParams(body);
         const payload = Buffer.from(params);
         const frame = buildCommand(CMD[cmdName] as CmdId, payload);
         await sendElinkFrame(frame);
@@ -536,7 +805,8 @@ const httpServer = http.createServer((req, res) => {
         res.end(JSON.stringify({ ok: true, cmd: cmdName }));
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        const status = message.includes("timeout after") ? 504 : 503;
+        const status = error instanceof BadRequestError ? 400
+          : message.includes("timeout after") ? 504 : 503;
         res.writeHead(status, cors);
         res.end(JSON.stringify({ ok: false, error: message }));
       }
@@ -604,7 +874,12 @@ const httpServer = http.createServer((req, res) => {
   }
 
   if (req.method === "GET" && req.url?.startsWith("/logs/")) {
-    const requested = path.basename(decodeURIComponent(req.url.slice(6)));
+    let requested: string;
+    try {
+      requested = path.basename(decodeURIComponent(req.url.slice(6)));
+    } catch {
+      res.writeHead(400, cors); res.end(JSON.stringify({ error: "Malformed log file name" })); return;
+    }
     const filePath = path.resolve("./logs", requested);
     const logRoot = path.resolve("./logs") + path.sep;
     if (!filePath.startsWith(logRoot) || !fs.existsSync(filePath)) {
@@ -621,9 +896,7 @@ const httpServer = http.createServer((req, res) => {
 
   // Configure HaLow port
   if (req.method === "POST" && req.url === "/config") {
-    let body = "";
-    req.on("data", (c) => (body += c));
-    req.on("end", async () => {
+    readBody(req, res, async (body) => {
       try {
         const { port: newPort } = JSON.parse(body) as { port?: string };
         if (!newPort) { res.writeHead(400, cors); res.end(JSON.stringify({ error: "port required" })); return; }
@@ -638,9 +911,7 @@ const httpServer = http.createServer((req, res) => {
 
   // Configure E-Link port
   if (req.method === "POST" && req.url === "/config/elink") {
-    let body = "";
-    req.on("data", (c) => (body += c));
-    req.on("end", async () => {
+    readBody(req, res, async (body) => {
       try {
         const { port: newPort } = JSON.parse(body) as { port?: string };
         if (!newPort) { res.writeHead(400, cors); res.end(JSON.stringify({ error: "port required" })); return; }
@@ -678,6 +949,7 @@ wss.on("connection", (ws) => {
     port: elinkUdpReady ? elinkEndpoint() : elinkPort,
   }));
   ws.send(JSON.stringify({ type: "logging", active: halowLogger.isActive() }));
+  ws.send(JSON.stringify({ type: "route", points: routeTracker.list() }));
   ws.on("close", () => console.log("[ws] Client disconnected"));
 });
 

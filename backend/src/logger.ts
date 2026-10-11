@@ -164,6 +164,32 @@ export class MissionEventLogger {
     this.rowCount++;
   }
 
+  /**
+   * A change made to the ground-station HaLow module, in the same file and columns
+   * as the time syncs: the setting goes in `source` (e.g. TXPOWER=12), so RSSI and
+   * PDR can be compared against the radio settings that were active at the time.
+   */
+  writeGroundRadioConfig(event: {
+    status: "OK" | "FAILED";
+    setting: string;
+    sentUtc: string;
+    finishedUtc: string;
+  }): void {
+    if (!this.active) this.start();
+    const row = [
+      "GROUND_HALOW_CONFIG",
+      "",
+      event.status,
+      "",
+      "",
+      event.sentUtc,
+      event.finishedUtc,
+      event.setting.replace(/[,\r\n]/g, ";"),
+    ].join(",");
+    fs.appendFileSync(this.filePath, row + "\n", "utf-8");
+    this.rowCount++;
+  }
+
   getFilePath(): string { return this.filePath; }
   getRowCount(): number { return this.rowCount; }
 }
