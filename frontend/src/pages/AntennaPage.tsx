@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
+import TripodCalibrationCard from "@/components/TripodCalibrationCard";
 import { useLiveData } from "@/hooks/useLiveData";
+import { useTripodCalibration } from "@/hooks/useTripodCalibration";
 import { fmt } from "@/lib/format";
+import { toTripodAzimuth, toTripodElevation } from "@/lib/tripodCalibration";
 
 // ─── WGS84 / ECEF / LTC pointing computation ─────────────────────────────────
 // Implements the BEXUS User Manual Chapter 10 coordinate system.
@@ -203,9 +206,15 @@ export default function AntennaPage() {
         sim.latitude, sim.longitude, sim.altitude,
       )
     : null;
-  const azimuth = pointing?.azimuth ?? null;
-  const elevation = pointing?.elevation ?? null;
+  // What the software computes (true bearing from north, elevation above the horizon)...
+  const trueAzimuth = pointing?.azimuth ?? null;
+  const trueElevation = pointing?.elevation ?? null;
   const slantRangeKm = pointing?.slantRangeKm ?? null;
+
+  // ...and what to dial on the tripod once it has been calibrated against its own scales.
+  const { calibration, setCalibration } = useTripodCalibration();
+  const azimuth = trueAzimuth === null ? null : toTripodAzimuth(trueAzimuth, calibration);
+  const elevation = trueElevation === null ? null : toTripodElevation(trueElevation, calibration);
 
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-6">
@@ -213,29 +222,53 @@ export default function AntennaPage() {
       {/* Instruction banner */}
       <div className="rounded-lg border border-tertiary/30 bg-card p-4">
         <p className="font-mono text-sm text-tertiary">
-          Point antenna to the indicated azimuth and elevation to track the balloon.
-          Update GS coordinates below to match your exact antenna position.
+          {calibration
+            ? "The numbers below are the ones to dial on the tripod's own scales."
+            : "Point antenna to the indicated azimuth and elevation to track the balloon."}
+          {" "}Update GS coordinates below to match your exact antenna position.
         </p>
       </div>
 
       {/* Main Az/El display */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div className="rounded-lg border border-border bg-card p-6 text-center space-y-3">
-          <span className="font-mono text-xs text-muted-foreground uppercase tracking-widest">Azimuth</span>
+          <span className="font-mono text-xs text-muted-foreground uppercase tracking-widest">
+            {calibration ? "Azimuth — tripod scale" : "Azimuth"}
+          </span>
           <div className="font-mono text-6xl font-bold text-primary text-glow-primary">
             {azimuth === null ? "—" : `${azimuth.toFixed(1)}°`}
           </div>
-          <CompassVisual azimuth={azimuth} />
+          {calibration && (
+            <div className="font-mono text-xs text-muted-foreground">
+              True bearing from north: {trueAzimuth === null ? "—" : `${trueAzimuth.toFixed(1)}°`}
+            </div>
+          )}
+          {/* the compass always draws the true bearing: N/E/S/W are real directions */}
+          <CompassVisual azimuth={trueAzimuth} />
         </div>
 
         <div className="rounded-lg border border-border bg-card p-6 text-center space-y-3">
-          <span className="font-mono text-xs text-muted-foreground uppercase tracking-widest">Elevation</span>
+          <span className="font-mono text-xs text-muted-foreground uppercase tracking-widest">
+            {calibration ? "Elevation — tripod scale" : "Elevation"}
+          </span>
           <div className="font-mono text-6xl font-bold text-tertiary text-glow-tertiary">
             {elevation === null ? "—" : `${elevation.toFixed(1)}°`}
           </div>
+          {calibration && (
+            <div className="font-mono text-xs text-muted-foreground">
+              True elevation: {trueElevation === null ? "—" : `${trueElevation.toFixed(1)}°`}
+            </div>
+          )}
           <ElevationArc elevation={elevation} />
         </div>
       </div>
+
+      <TripodCalibrationCard
+        calibration={calibration}
+        computedAz={trueAzimuth}
+        computedEl={trueElevation}
+        onChange={setCalibration}
+      />
 
       {/* Slant range */}
       <div className="grid grid-cols-3 gap-4">

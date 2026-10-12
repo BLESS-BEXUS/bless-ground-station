@@ -124,7 +124,9 @@ describe("mission clock in the top bar", () => {
 });
 
 describe("antenna page coordinates", () => {
-  const inputs = () => screen.getAllByRole("spinbutton") as HTMLInputElement[];
+  // the station's latitude, longitude and altitude fields, by their placeholders
+  const inputs = () =>
+    ["67.8856", "21.0786", "310"].map((p) => screen.getByPlaceholderText(p) as HTMLInputElement);
 
   it("keeps what was typed after leaving the page and coming back", () => {
     const first = render(<Providers><AntennaPage /></Providers>);
@@ -355,5 +357,93 @@ describe("map page", () => {
     renderMap();
     const position = screen.getByText("Balloon Position").parentElement!;
     expect(within(position).getAllByText("—").length).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe("tripod calibration on the antenna page", () => {
+  const bigNumbers = (container: HTMLElement) =>
+    Array.from(container.querySelectorAll(".text-6xl")).map((e) => e.textContent ?? "");
+  const trueBearing = () => {
+    const text = screen.getByText(/True bearing from north/).textContent ?? "";
+    return Number(/(-?\d+\.\d)°/.exec(text)![1]);
+  };
+  const shownAzimuth = (container: HTMLElement) => Number(/(-?\d+\.\d)°/.exec(bigNumbers(container)[0])![1]);
+  const wrap = (deg: number) => ((deg % 360) + 360) % 360;
+
+  function payloadAt(latitude: number, longitude: number) {
+    act(() => FakeWebSocket.latest.open());
+    act(() => FakeWebSocket.latest.receive({
+      type: "elink_telemetry",
+      data: packet({ latitude, longitude, altitude: 330 }),
+    }));
+  }
+
+  it("cannot calibrate without a payload position", () => {
+    render(<Providers><AntennaPage /></Providers>);
+    expect(screen.getByRole("button", { name: /Calibrate to current pointing/ })).toBeDisabled();
+    expect(screen.getByText(/Waiting for a payload position/)).toBeInTheDocument();
+  });
+
+  it("makes the big azimuth the tripod's number, follows the payload on the tripod's sense, and leaves elevation alone", () => {
+    const { container } = render(<Providers><AntennaPage /></Providers>);
+    payloadAt(67.8956, 21.0986);                                   // a bit north-east of the station
+
+    const rawAzimuth = shownAzimuth(container);
+    const rawElevation = bigNumbers(container)[1];
+    expect(screen.queryByText(/True bearing from north/)).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText(/Tripod azimuth now/), { target: { value: "335" } });
+    fireEvent.click(screen.getByRole("button", { name: /Calibrate to current pointing/ }));
+
+    expect(shownAzimuth(container)).toBeCloseTo(335, 1);
+    expect(trueBearing()).toBeCloseTo(rawAzimuth, 1);              // the real bearing stays visible
+    expect(bigNumbers(container)[1]).toBe(rawElevation);           // elevation is untouched
+    expect(screen.getByText(/Elevation: untouched/)).toBeInTheDocument();
+
+    // The payload moves clockwise (true bearing grows): on this tripod the numbers go down.
+    const before = trueBearing();
+    payloadAt(67.8956, 21.1186);
+    const delta = trueBearing() - before;
+    expect(delta).toBeGreaterThan(0.5);
+    expect(shownAzimuth(container)).toBeCloseTo(wrap(335 - delta), 0);
+  });
+
+  it("keeps the calibration after the page is reopened, and Reset brings the true values back", () => {
+    const first = render(<Providers><AntennaPage /></Providers>);
+    payloadAt(67.8956, 21.0986);
+    const rawAzimuth = shownAzimuth(first.container);
+    fireEvent.change(screen.getByLabelText(/Tripod azimuth now/), { target: { value: "335" } });
+    fireEvent.click(screen.getByRole("button", { name: /Calibrate to current pointing/ }));
+    first.unmount();
+
+    const second = render(<Providers><AntennaPage /></Providers>);
+    payloadAt(67.8956, 21.0986);
+    expect(shownAzimuth(second.container)).toBeCloseTo(335, 1);
+
+    fireEvent.click(screen.getByRole("button", { name: /Reset calibration/ }));
+    expect(shownAzimuth(second.container)).toBeCloseTo(rawAzimuth, 1);
+    expect(window.localStorage.getItem("bless-tripod-calibration")).toBeNull();
+  });
+
+  it("can be set for a tripod whose numbers grow turning right", () => {
+    const { container } = render(<Providers><AntennaPage /></Providers>);
+    payloadAt(67.8956, 21.0986);
+    fireEvent.change(screen.getByLabelText(/Tripod azimuth now/), { target: { value: "335" } });
+    fireEvent.change(screen.getByLabelText(/Azimuth numbers grow/), { target: { value: "cw" } });
+    fireEvent.click(screen.getByRole("button", { name: /Calibrate to current pointing/ }));
+
+    const before = trueBearing();
+    payloadAt(67.8956, 21.1186);
+    const delta = trueBearing() - before;
+    expect(shownAzimuth(container)).toBeCloseTo(wrap(335 + delta), 0);
+  });
+
+  it("still lets the elevation be corrected when a value is typed", () => {
+    const { container } = render(<Providers><AntennaPage /></Providers>);
+    payloadAt(67.8956, 21.0986);
+    fireEvent.change(screen.getByLabelText(/Tripod azimuth now/), { target: { value: "335" } });
+    fireEvent.change(screen.getByLabelText(/Tripod elevation now/), { target: { value: "0" } });
+    fireEvent.click(screen.getByRole("button", { name: /Calibrate to current pointing/ }));
+    expect(bigNumbers(container)[1]).toBe("0.0°");
   });
 });
