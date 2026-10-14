@@ -447,3 +447,114 @@ describe("tripod calibration on the antenna page", () => {
     expect(bigNumbers(container)[1]).toBe("0.0°");
   });
 });
+
+describe("antenna page: telling an uncalibrated tripod from a calibrated one", () => {
+  it("warns that the numbers are the true bearing until the tripod is calibrated", () => {
+    render(<Providers><AntennaPage /></Providers>);
+    expect(screen.getByText(/Not calibrated: these are the true bearing/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Calibrate to the tripod/ })).toBeInTheDocument();
+  });
+
+  it("drops the warning once calibrated", () => {
+    render(<Providers><AntennaPage /></Providers>);
+    act(() => FakeWebSocket.latest.open());
+    act(() => FakeWebSocket.latest.receive({
+      type: "elink_telemetry",
+      data: packet({ latitude: 67.8956, longitude: 21.0986, altitude: 330 }),
+    }));
+    fireEvent.change(screen.getByLabelText(/Tripod azimuth now/), { target: { value: "335" } });
+    fireEvent.click(screen.getByRole("button", { name: /Calibrate to current pointing/ }));
+    expect(screen.queryByText(/Not calibrated: these are the true bearing/)).not.toBeInTheDocument();
+  });
+});
+
+describe("antenna page: coordinates changed after calibrating", () => {
+  function payloadAt(latitude: number, longitude: number) {
+    act(() => FakeWebSocket.latest.open());
+    act(() => FakeWebSocket.latest.receive({
+      type: "elink_telemetry",
+      data: packet({ latitude, longitude, altitude: 330 }),
+    }));
+  }
+  const bigAzimuth = (container: HTMLElement) =>
+    Number(/(-?\d+\.\d)°/.exec(container.querySelectorAll(".text-6xl")[0].textContent ?? "")![1]);
+
+  it("warns, because the tripod numbers shift when the station position changes, and recalibrating clears it", () => {
+    const { container } = render(<Providers><AntennaPage /></Providers>);
+    payloadAt(67.8956, 21.0986);
+    fireEvent.change(screen.getByLabelText(/Tripod azimuth now/), { target: { value: "335" } });
+    fireEvent.click(screen.getByRole("button", { name: /Calibrate to current pointing/ }));
+    expect(bigAzimuth(container)).toBeCloseTo(335, 1);
+    expect(screen.queryByText(/Out of date/)).not.toBeInTheDocument();
+
+    // the operator corrects the station position afterwards
+    fireEvent.change(screen.getByPlaceholderText("67.8856"), { target: { value: "67.87964" } });
+    fireEvent.change(screen.getByPlaceholderText("21.0786"), { target: { value: "21.062234" } });
+
+    expect(bigAzimuth(container)).not.toBeCloseTo(335, 0);        // the number really did move
+    expect(screen.getByText(/Out of date/)).toBeInTheDocument();
+    expect(screen.getByText(/coordinates changed after this calibration/)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText(/Tripod azimuth now/), { target: { value: "335" } });
+    fireEvent.click(screen.getByRole("button", { name: /Calibrate to current pointing/ }));
+    expect(bigAzimuth(container)).toBeCloseTo(335, 1);
+    expect(screen.queryByText(/Out of date/)).not.toBeInTheDocument();
+  });
+
+  it("does not warn when the coordinates are only retyped to the same values", () => {
+    render(<Providers><AntennaPage /></Providers>);
+    payloadAt(67.8956, 21.0986);
+    fireEvent.change(screen.getByLabelText(/Tripod azimuth now/), { target: { value: "335" } });
+    fireEvent.click(screen.getByRole("button", { name: /Calibrate to current pointing/ }));
+    fireEvent.change(screen.getByPlaceholderText("67.8856"), { target: { value: "67.8856" } });
+    expect(screen.queryByText(/Out of date/)).not.toBeInTheDocument();
+  });
+});
+
+describe("antenna page: recalibrating", () => {
+  const bigNumbers = (container: HTMLElement) =>
+    Array.from(container.querySelectorAll(".text-6xl")).map((e) => e.textContent ?? "");
+  function payloadAt(latitude: number, longitude: number) {
+    act(() => FakeWebSocket.latest.open());
+    act(() => FakeWebSocket.latest.receive({
+      type: "elink_telemetry",
+      data: packet({ latitude, longitude, altitude: 330 }),
+    }));
+  }
+
+  it("starts with empty fields, so a reading from the last calibration is never reused by mistake", () => {
+    const first = render(<Providers><AntennaPage /></Providers>);
+    payloadAt(67.8956, 21.0986);
+    fireEvent.change(screen.getByLabelText(/Tripod azimuth now/), { target: { value: "335" } });
+    fireEvent.click(screen.getByRole("button", { name: /Calibrate to current pointing/ }));
+    first.unmount();
+
+    render(<Providers><AntennaPage /></Providers>);
+    payloadAt(67.8956, 21.0986);
+    expect((screen.getByLabelText(/Tripod azimuth now/) as HTMLInputElement).value).toBe("");
+    expect(screen.getByRole("button", { name: /Calibrate to current pointing/ })).toBeDisabled();
+  });
+
+  it("keeps the elevation offset already in force when only the azimuth is recalibrated", () => {
+    const { container } = render(<Providers><AntennaPage /></Providers>);
+    const shownElevation = () => Number(/(-?\d+\.\d)°/.exec(bigNumbers(container)[1])![1]);
+    const trueElevation = () => Number(/True elevation: (-?\d+\.\d)°/.exec(container.textContent ?? "")![1]);
+    payloadAt(67.8956, 21.0986);
+    fireEvent.change(screen.getByLabelText(/Tripod azimuth now/), { target: { value: "335" } });
+    fireEvent.change(screen.getByLabelText(/Tripod elevation now/), { target: { value: "0" } });
+    fireEvent.click(screen.getByRole("button", { name: /Calibrate to current pointing/ }));
+    expect(shownElevation()).toBeCloseTo(0, 1);
+    const offsetBefore = shownElevation() - trueElevation();
+
+    // the payload moved; azimuth recalibrated, elevation field left empty
+    payloadAt(67.8956, 21.1186);
+    fireEvent.change(screen.getByLabelText(/Tripod azimuth now/), { target: { value: "341" } });
+    fireEvent.change(screen.getByLabelText(/Tripod elevation now/), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: /Calibrate to current pointing/ }));
+
+    expect(Number(/(-?\d+\.\d)°/.exec(bigNumbers(container)[0])![1])).toBeCloseTo(341, 1);
+    // the elevation offset is the same one as before: shown - true did not change
+    // both numbers are shown with one decimal, so allow one rounding step
+    expect(Math.abs(shownElevation() - trueElevation() - offsetBefore)).toBeLessThanOrEqual(0.15);
+  });
+});

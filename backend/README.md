@@ -113,7 +113,7 @@ round-trip time:
 { "ok": true, "cmd": "PING", "token": 4660, "rttMs": 12, "from": "10.86.110.200:5000" }
 ```
 
-Available commands: `SYS_RESET`, `SYS_START`, `SYS_STOP`, `PING`, `SYNC_TIME`, `HEAT_MANUAL`, `HEAT_AUTO`, `HALOW_CONNECT`, `SET_TX_POWER`, `SET_MCS_MODE`, `RF_SILENCE`, `SAVE_DATA`, `SEND_HALOW`, `SEND_ELINK`
+Available commands: `SYS_RESET`, `SYS_START`, `SYS_STOP`, `PING`, `SYNC_TIME`, `HEAT_MANUAL`, `HEAT_AUTO`, `HALOW_CONNECT`, `SET_TX_POWER`, `SET_MCS_MODE`, `RF_SILENCE`, `SET_HALOW_MODE` (param 0 = AP, 1 = GROUP), `SAVE_DATA`, `SEND_HALOW`, `SEND_ELINK`
 
 `SYNC_TIME` uses command ID `0x05` with an empty payload. The REST request only
 returns success after the payload replies with `ACK: SYNC_TIME`.

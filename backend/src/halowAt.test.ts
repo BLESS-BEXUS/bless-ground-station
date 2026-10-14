@@ -36,6 +36,7 @@ test("values are validated against the limits the payload enforces", () => {
 
   assert.deepEqual(validateAtCommand("ACKTMO", "2990"), { ok: true, value: "2990" });
   assert.deepEqual(validateAtCommand("MODE", "sta"), { ok: true, value: "STA" });
+  assert.deepEqual(validateAtCommand("MODE", "group"), { ok: true, value: "GROUP" });
   assert.equal(validateAtCommand("MODE", "MESH").ok, false);
   assert.equal(validateAtCommand("NOPE", "1").ok, false);
 });
@@ -162,4 +163,15 @@ test("a module that echoes the PSK does not expose it in the response", async ()
   assert.equal(result.value, "********");
   assert.equal(JSON.stringify(result).includes("supersecretpassword1"), false);
   assert.deepEqual(result.response, ["PSK=********", "OK"]);
+});
+
+test("RSSI, JOINGROUP and SYSDBG are validated", () => {
+  assert.deepEqual(validateAtCommand("RSSI", "1"), { ok: true, value: "1" });
+  assert.deepEqual(validateAtCommand("RSSI", "F4:DE:09:68:6C:20"), { ok: true, value: "f4:de:09:68:6c:20" });
+  assert.equal(validateAtCommand("RSSI", "0").ok, false);
+  assert.equal(validateAtCommand("RSSI", "abc").ok, false);
+  assert.deepEqual(validateAtCommand("JOINGROUP", "11:22:33:44:55:66, 0"), { ok: true, value: "11:22:33:44:55:66,0" });
+  assert.equal(validateAtCommand("JOINGROUP", "11:22:33:44:55:66").ok, false);
+  assert.deepEqual(validateAtCommand("SYSDBG", "lmac,1"), { ok: true, value: "LMAC,1" });
+  assert.equal(validateAtCommand("SYSDBG", "FOO,1").ok, false);
 });

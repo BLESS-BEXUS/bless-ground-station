@@ -92,3 +92,14 @@ test("route survives a restart and can be cleared", () => {
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("the ground station's RSSI is used when the payload reports 0, and never overrides a real one", () => {
+  const tracker = new RouteTracker(null);
+  // payload sends rssi 0: the fallback fills the point
+  assert.equal(tracker.record(packet(67.9, 21.1, { rssi: 0 }), "elink", 1_000, -71)?.rssi, -71);
+  // a plausible payload value wins over the fallback
+  assert.equal(tracker.record(packet(67.91, 21.1, { rssi: -64 }), "elink", 6_000, -71)?.rssi, -64);
+  // nothing usable anywhere: no color rather than a wrong one
+  assert.equal(tracker.record(packet(67.92, 21.1, { rssi: 0 }), "elink", 11_000, 0)?.rssi, null);
+  assert.equal(tracker.record(packet(67.93, 21.1, { rssi: 0 }), "elink", 16_000, null)?.rssi, null);
+});

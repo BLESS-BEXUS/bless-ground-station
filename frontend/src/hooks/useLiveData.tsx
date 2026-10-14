@@ -9,6 +9,13 @@ import React, {
 import { LINK_FRESHNESS_MS, selectTelemetrySource } from "@/lib/linkSelection";
 import { HTTP_URL, WS_URL } from "@/lib/backendUrl";
 import { normalizeRoutePoint, type RoutePoint } from "@/lib/route";
+import { resolveRadio } from "@/lib/radio";
+import {
+  gsRfFromSnapshot,
+  sampleFromPacket,
+  type GsRfView,
+  type TelemetrySample,
+} from "@/lib/telemetrySeries";
 import {
   GROUND_STATION_STORAGE_KEY,
   loadGroundStation,
@@ -34,6 +41,8 @@ export interface TelemetryData {
   noiseFloor: number | null;
   txMcs: number | null;
   halowStatus: "ACTIVE" | "DEGRADED" | "INTERRUPTED" | null;
+  /** Where RSSI / SNR / noise floor come from: the payload's own report or the ground module's reading. */
+  radioSource?: "payload" | "ground" | null;
   // Hardware
   systemState: number | null;
   systemStateLabel: "INIT" | "IDLE" | "FLIGHT" | "UNKNOWN" | null;
@@ -95,6 +104,10 @@ interface LiveDataContextValue {
   logging: boolean;
   groundStation: GroundStationLocation;
   setGroundStation: (location: GroundStationLocation) => void;
+  /** Every E-Link packet received, flattened for the telemetry charts (newest last). */
+  elinkSamples: TelemetrySample[];
+  /** Radio dumps of the ground-station HaLow module (RSSI, SNR, noise floor...). */
+  gsRfSamples: GsRfView[];
   /** Payload GNSS route recorded by the backend, point by point. */
   route: RoutePoint[];
   clearRoute: () => Promise<boolean>;
@@ -138,6 +151,27 @@ const INITIAL_TELEMETRY: TelemetryData = {
   trajectoryHistory: [],
 };
 
+/**
+ * The payload reports RSSI, SNR, noise floor and frequency deviation as 0. The backend
+ * attaches the ground station's own measurements (gsRssi, gsSnr, ...), so every page
+ * gets a real value, or null, instead of a misleading 0.
+ */
+function withResolvedRadio(raw: TelemetryData): TelemetryData {
+  const gs = raw as TelemetryData & {
+    gsRssi?: number | null; gsSnr?: number | null; gsNoiseFloor?: number | null; gsFreqDev?: number | null;
+  };
+  const radio = resolveRadio({
+    rssi: raw.rssi, snr: raw.snr, noiseFloor: raw.noiseFloor, freqDevHz: raw.freqDevHz,
+    gsRssi: gs.gsRssi, gsSnr: gs.gsSnr, gsNoiseFloor: gs.gsNoiseFloor, gsFreqDev: gs.gsFreqDev,
+  });
+  return {
+    ...raw, rssi: radio.rssi, snr: radio.snr, noiseFloor: radio.noiseFloor, freqDevHz: radio.freqDevHz,
+    radioSource: radio.source,
+  };
+}
+
+const MAX_SERIES_POINTS = 5000;
+
 // The route on the map comes from the backend; this short history is only used to spot jumps.
 const MAX_TRAJECTORY_POINTS = 5000;
 
@@ -180,6 +214,8 @@ export function LiveDataProvider({ children }: { children: React.ReactNode }) {
   const [elinkTelemetry, setElinkTelemetry] = useState<TelemetryData>(INITIAL_TELEMETRY);
   const [logging, setLogging] = useState(false);
   const [route, setRoute] = useState<RoutePoint[]>([]);
+  const [elinkSamples, setElinkSamples] = useState<TelemetrySample[]>([]);
+  const [gsRfSamples, setGsRfSamples] = useState<GsRfView[]>([]);
   const [groundStation, setGroundStationState] = useState<GroundStationLocation>(loadGroundStation);
   const loggingRef = useRef(false);
   const [connection, setConnection] = useState<ConnectionState>({
@@ -273,10 +309,28 @@ export function LiveDataProvider({ children }: { children: React.ReactNode }) {
           }));
         }
 
+        if (msg.type === "history") {
+          const samples = Array.isArray(msg.elink)
+            ? (msg.elink as unknown[]).map((p) => sampleFromPacket(p)).filter((x): x is TelemetrySample => x !== null)
+            : [];
+          const dumps = Array.isArray(msg.gsRf)
+            ? (msg.gsRf as unknown[]).map(gsRfFromSnapshot).filter((x): x is GsRfView => x !== null)
+            : [];
+          setElinkSamples(samples.slice(-MAX_SERIES_POINTS));
+          setGsRfSamples(dumps.slice(-MAX_SERIES_POINTS));
+        }
+
+        if (msg.type === "gs_rf" && msg.data) {
+          const dump = gsRfFromSnapshot(msg.data);
+          if (dump) setGsRfSamples((prev) => [...prev, dump].slice(-MAX_SERIES_POINTS));
+        }
+
         if (msg.type === "elink_telemetry" && msg.data) {
           const now = Date.now();
+          const sample = sampleFromPacket(msg.data, now);
+          if (sample) setElinkSamples((prev) => [...prev, sample].slice(-MAX_SERIES_POINTS));
           const next = mergePacket(latestElinkRef.current ?? INITIAL_TELEMETRY,
-                                   msg.data as TelemetryData);
+                                   withResolvedRadio(msg.data as TelemetryData));
           latestElinkRef.current = next;
           lastElinkActivityRef.current = now;
           lastElinkRxRef.current = now;
@@ -292,7 +346,7 @@ export function LiveDataProvider({ children }: { children: React.ReactNode }) {
         if (msg.type === "telemetry" && msg.data) {
           const now = Date.now();
           const next = mergePacket(latestHalowRef.current ?? INITIAL_TELEMETRY,
-                                   msg.data as TelemetryData);
+                                   withResolvedRadio(msg.data as TelemetryData));
           latestHalowRef.current = next;
           lastHalowRxRef.current = now;
           const elinkFresh = (now - lastElinkRxRef.current) <= LINK_FRESHNESS_MS;
@@ -449,6 +503,8 @@ export function LiveDataProvider({ children }: { children: React.ReactNode }) {
       setGroundStation,
       route,
       clearRoute,
+      elinkSamples,
+      gsRfSamples,
       toggleLogging,
       sendCommand,
       changePort,

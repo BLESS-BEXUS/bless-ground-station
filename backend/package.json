@@ -6,7 +6,7 @@
   "scripts": {
     "build": "tsc",
     "test": "npm run test:unit && npm run test:e2e",
-    "test:unit": "ts-node src/protocol.test.ts && ts-node src/track.test.ts && ts-node src/tiles.test.ts && ts-node src/halowAt.test.ts",
+    "test:unit": "ts-node src/protocol.test.ts && ts-node src/track.test.ts && ts-node src/tiles.test.ts && ts-node src/halowAt.test.ts && ts-node src/gsLmac.test.ts && ts-node src/gsRadio.test.ts",
     "test:e2e": "ts-node src/e2e.test.ts",
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",

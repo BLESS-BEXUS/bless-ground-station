@@ -8,6 +8,10 @@
  *   unplugged        exists -> the port is "not there": open fails, an open port closes
  *   frames           exists -> a telemetry frame every $FAKE_FRAME_MS (default 250)
  *                    optional JSON content: {"rssi": -72, "fix": true}
+ *   lmac             exists -> the module prints its "LMAC STATUS" radio dump every
+ *                    `everyMs` (default 500); optional JSON content:
+ *                    {"rssi": -67, "snr": 31, "rxFrames": 12, "chipTempC": 35, "everyMs": 100}
+ *                    without rssi the dump looks like an idle module (rssi=0, rx cnt=0)
  *   inject-*.hex     raw bytes (hex) emitted once, then the file is deleted
  *   received.log     every AT command the backend wrote (appended)
  * AT behaviour: TX_MCS=5 stays silent, TXPOWER=19 answers ERROR, anything else OK.
@@ -49,7 +53,31 @@ function telemetry(count, { rssi = -65, fix = true } = {}) {
   return b;
 }
 
+function lmacDump(options, uptime) {
+  const rx = options.rssi !== undefined;
+  const rxFrames = options.rxFrames ?? (rx ? 12 : 0);
+  const lines = [
+    "LMAC STATUS:",
+    "local: 82:59:13:89:90:c0 AID= 0",
+    "freq= 866.0 bw=1 chn=0 bgr=-60 iq=0:50:-1:0 dc=0:0(-5:14) tx=*5 dly=0:0:0 sif:rsp=0:0(0)",
+    "chn:  866.0  867.0 ",
+    "bgr:    -60    -60 ",
+    "buf: free=78 tq=0 sq=0 ac=0:0:0:0 agg=0:0:0:0 statq=0 rxq=0:0 skb=0:0 rxb=120K",
+    "irq: ac=3 bkn=0 bo(rts:frm)=0:0:0:0:3 to(rts:frm)=0:0 rx=0",
+    "tx : cnt=3 dly=0:0ms mcast(bw:mcs)=2:" + (options.txMcs ?? 0) + " agg=1(6026,3:0) data=0KB(0kbps) dur=7ms cca=15 per=0% est_rate=7kbps fail=0 drop=0",
+    "rx : cnt=" + rxFrames + " bus=0ms cts_bm=0:0 pks=" + rxFrames + " data=" + (rx ? 1 : 0) + "KB(" + (rx ? 4 : 0) + "kbps) dur= 0ms err(phy:fcs)=0:0 ecode=0x0 rssie= 0:0 cache_rxq= 0:0",
+    "dbg: dtmd=0:0:0 stamap=0x0 sleepmap=0x0 flag=0x0 rxdp=0 kerr=0 mic=0 lerr=0 kick=0 csc=0 rst=9 ovf=0 nob=0 tsnr=" + (options.snr ?? 0) + " rssi=" + (options.rssi ?? 0) + " rxdut=0% txp=0 rxg=5    ",
+    "cca: 4s st12= 0:0 mid1224= 0:0:0:0 ed1224= 0:0 ch_bz= 0",
+    "chip-temperature:" + (options.chipTempC ?? 35) + ", vcc:3.30, vdd13b:1.32, vdd13c:1.31",
+    "sta_list: no sta",
+    "[" + uptime + "]",
+  ];
+  const crlf = String.fromCharCode(13, 10);
+  return lines.join(crlf) + crlf;
+}
+
 global.__fakeFrameCount = 0;
+global.__fakeUptime = 257118;
 global.__fakeOpen = null;
 
 class FakeSerialPort extends EventEmitter {
@@ -74,6 +102,7 @@ class FakeSerialPort extends EventEmitter {
     this.emit("open");
 
     let lastFrame = 0;
+    let lastDump = 0;
     this.watch = setInterval(() => {
       if (!this.isOpen) return;
       if (has("unplugged")) {
@@ -87,6 +116,15 @@ class FakeSerialPort extends EventEmitter {
         const hex = fs.readFileSync(file, "utf-8").replace(/\s+/g, "");
         fs.unlinkSync(file);
         this.emit("data", Buffer.from(hex, "hex"));
+      }
+      if (has("lmac")) {
+        let options = {};
+        try { options = JSON.parse(fs.readFileSync(path.join(DIR, "lmac"), "utf-8") || "{}"); } catch { /* defaults */ }
+        if (Date.now() - lastDump >= (options.everyMs ?? 500)) {
+          lastDump = Date.now();
+          global.__fakeUptime += options.everyMs ?? 500;
+          this.emit("data", Buffer.from(lmacDump(options, global.__fakeUptime)));
+        }
       }
       if (has("frames") && Date.now() - lastFrame >= FRAME_MS) {
         lastFrame = Date.now();

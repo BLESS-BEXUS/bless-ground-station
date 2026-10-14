@@ -1,19 +1,27 @@
 import { useState } from "react";
-import { calibrate, type TripodCalibration } from "@/lib/tripodCalibration";
+import { calibrate, type StationPosition, type TripodCalibration } from "@/lib/tripodCalibration";
 
 interface Props {
   calibration: TripodCalibration | null;
   /** The true bearing / elevation computed right now, or null while the payload position is unknown. */
   computedAz: number | null;
   computedEl: number | null;
+  /** The station position those bearings were computed from. */
+  station: StationPosition;
+  /** The calibration was made with a different station position. */
+  stale: boolean;
   onChange: (calibration: TripodCalibration | null) => void;
 }
 
 const signed = (value: number, decimals = 1) => `${value > 0 ? "+" : ""}${value.toFixed(decimals)}°`;
 
-export default function TripodCalibrationCard({ calibration, computedAz, computedEl, onChange }: Props) {
-  const [az, setAz] = useState(calibration ? String(calibration.tripodAz) : "");
-  const [el, setEl] = useState(calibration ? String(calibration.tripodEl) : "");
+export default function TripodCalibrationCard({
+  calibration, computedAz, computedEl, station, stale, onChange,
+}: Props) {
+  // Empty on purpose: a value left over from the last calibration would silently
+  // re-anchor the tripod on a reading that is no longer the one on the dial.
+  const [az, setAz] = useState("");
+  const [el, setEl] = useState("");
   const [clockwise, setClockwise] = useState(calibration?.clockwise ?? false);
 
   const azNumber = Number(az);
@@ -28,20 +36,22 @@ export default function TripodCalibrationCard({ calibration, computedAz, compute
       computedAz,
       computedEl,
       tripodAz: azNumber,
-      // no elevation typed: the tripod's elevation is already right, so no offset at all
-      tripodEl: elevationGiven ? elNumber : computedEl,
+      // no elevation typed: leave the elevation exactly as it is now (the offset already in
+      // force, or none), instead of re-anchoring it
+      tripodEl: elevationGiven ? elNumber : computedEl + (calibration?.elOffset ?? 0),
       clockwise,
+      groundStation: station,
     }));
   }
 
   return (
-    <div className="rounded-lg border border-border bg-card p-5 space-y-4">
+    <div id="tripod-calibration" className="rounded-lg border border-border bg-card p-5 space-y-4">
       <h3 className="font-mono text-xs text-muted-foreground uppercase tracking-widest">
         Tripod calibration — make the numbers match the tripod's scales
       </h3>
       <ol className="font-mono text-xs text-muted-foreground list-decimal pl-5 space-y-1">
         <li>Point the antenna exactly at the payload.</li>
-        <li>Type what the tripod's azimuth scale reads right now (and the elevation only if it needs correcting).</li>
+        <li>Type what the tripod's azimuth scale reads right now (the elevation only if it needs correcting; empty keeps it as is).</li>
         <li>Press Calibrate. From then on the big numbers are the ones to dial on the tripod.</li>
       </ol>
 
@@ -57,7 +67,7 @@ export default function TripodCalibrationCard({ calibration, computedAz, compute
         <div className="flex flex-col gap-1">
           <label className="font-mono text-xs text-muted-foreground" htmlFor="tripod-el">Tripod elevation now (°) — optional</label>
           <input
-            id="tripod-el" type="number" step="0.1" value={el} placeholder="empty = leave elevation as is"
+            id="tripod-el" type="number" step="0.1" value={el} placeholder="empty = keep elevation as is"
             onChange={(e) => setEl(e.target.value)}
             className="bg-background border border-border rounded px-3 py-2 font-mono text-sm text-foreground focus:outline-none focus:border-primary/60"
           />
@@ -95,8 +105,15 @@ export default function TripodCalibrationCard({ calibration, computedAz, compute
         )}
       </div>
 
+      {stale && (
+        <p className="font-mono text-xs text-warning rounded-md border border-warning/40 bg-warning/10 px-3 py-2">
+          The ground-station coordinates changed after this calibration, so every true bearing moved and the
+          offset below no longer fits. Aim at the payload, type what the tripod reads and press Calibrate again.
+        </p>
+      )}
+
       {calibration ? (
-        <p className="font-mono text-xs text-success">
+        <p className={`font-mono text-xs ${stale ? "text-warning" : "text-success"}`}>
           Calibrated{calibration.at ? ` at ${new Date(calibration.at).toLocaleTimeString()}` : ""}: tripod
           {" "}{calibration.tripodAz.toFixed(1)}° / {calibration.tripodEl.toFixed(1)}° was a true
           {" "}{calibration.computedAz.toFixed(1)}° / {calibration.computedEl.toFixed(1)}°.

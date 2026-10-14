@@ -24,6 +24,17 @@ export interface TripodCalibration {
   computedEl: number;
   /** ISO time of the calibration. */
   at: string;
+  /**
+   * The ground-station coordinates the computed bearing was based on. If they change
+   * afterwards every true bearing shifts and this offset no longer applies.
+   */
+  groundStation?: StationPosition;
+}
+
+export interface StationPosition {
+  lat: number;
+  lng: number;
+  alt: number;
 }
 
 export function normalizeAzimuth(degrees: number): number {
@@ -37,6 +48,7 @@ export function calibrate(input: {
   tripodEl: number;
   clockwise?: boolean;
   at?: string;
+  groundStation?: StationPosition;
 }): TripodCalibration {
   const clockwise = input.clockwise ?? true;
   return {
@@ -48,7 +60,25 @@ export function calibrate(input: {
     computedAz: input.computedAz,
     computedEl: input.computedEl,
     at: input.at ?? new Date().toISOString(),
+    groundStation: input.groundStation,
   };
+}
+
+// About 0.1 m in latitude/longitude and half a metre in altitude: anything the operator
+// would type on purpose is bigger than this, float noise is not.
+const COORDINATE_TOLERANCE_DEG = 1e-6;
+const ALTITUDE_TOLERANCE_M = 0.5;
+
+/** True when the station was moved or re-surveyed after this calibration was made. */
+export function calibrationIsStale(
+  calibration: TripodCalibration | null,
+  station: StationPosition,
+): boolean {
+  const reference = calibration?.groundStation;
+  if (!reference) return false;       // saved before the position was recorded: cannot tell
+  return Math.abs(reference.lat - station.lat) > COORDINATE_TOLERANCE_DEG
+    || Math.abs(reference.lng - station.lng) > COORDINATE_TOLERANCE_DEG
+    || Math.abs(reference.alt - station.alt) > ALTITUDE_TOLERANCE_M;
 }
 
 /** The azimuth to dial on the tripod; the computed true bearing when not calibrated. */
@@ -74,10 +104,15 @@ export function parseTripodCalibration(raw: string | null): TripodCalibration | 
     const p = JSON.parse(raw) as Partial<TripodCalibration> | null;
     if (!p || typeof p !== "object") return null;
     if (!finite(p.azOffset) || !finite(p.elOffset) || typeof p.clockwise !== "boolean") return null;
+    const gs = p.groundStation;
+    const groundStation = gs && finite(gs.lat) && finite(gs.lng) && finite(gs.alt)
+      ? { lat: gs.lat, lng: gs.lng, alt: gs.alt }
+      : undefined;
     return {
       azOffset: p.azOffset,
       elOffset: p.elOffset,
       clockwise: p.clockwise,
+      groundStation,
       tripodAz: finite(p.tripodAz) ? p.tripodAz : 0,
       tripodEl: finite(p.tripodEl) ? p.tripodEl : 0,
       computedAz: finite(p.computedAz) ? p.computedAz : 0,

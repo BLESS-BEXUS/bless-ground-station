@@ -7,6 +7,8 @@ interface ParamDef {
   min: number;
   max: number;
   default: number;
+  /** Named choices: shown as a selector instead of a slider. */
+  options?: { value: number; label: string }[];
 }
 
 interface CommandDef {
@@ -41,6 +43,13 @@ const COMMANDS: CommandDef[] = [
   {
     label: "SET MCS MODE", cmd: "SET_MCS_MODE", description: "Configura el modo de modulación HaLow",
     params: [{ name: "MCS Index", unit: "", min: 0, max: 7, default: 0 }],
+  },
+  {
+    label: "HaLow MODE", cmd: "SET_HALOW_MODE", description: "Cambia el modo del HaLow del payload y lo reconfigura (0 = AP, 1 = GROUP). Si falla, usa HaLow CONNECT",
+    params: [{
+      name: "Mode", unit: "", min: 0, max: 1, default: 1,
+      options: [{ value: 0, label: "AP" }, { value: 1, label: "GROUP" }],
+    }],
   },
   { label: "RF SILENCE",  cmd: "RF_SILENCE",  description: "Silencio de radio inmediato", danger: true },
   // Data
@@ -150,9 +159,31 @@ export default function CommandModal({ open, onClose }: CommandModalProps) {
                         <div className="flex items-center justify-between">
                           <label className="font-mono text-sm text-foreground">{p.name}</label>
                           <span className="font-mono text-sm font-bold text-primary">
-                            {paramValues[p.name] ?? p.default}{p.unit}
+                            {p.options?.find((o) => o.value === (paramValues[p.name] ?? p.default))?.label
+                              ?? `${paramValues[p.name] ?? p.default}${p.unit}`}
                           </span>
                         </div>
+                        {p.options ? (
+                          <div className="flex gap-2" role="group" aria-label={p.name}>
+                            {p.options.map((o) => (
+                              <button
+                                key={o.value}
+                                type="button"
+                                onClick={() => setParamValues((prev) => ({ ...prev, [p.name]: o.value }))}
+                                aria-pressed={(paramValues[p.name] ?? p.default) === o.value}
+                                disabled={disabled}
+                                className={`flex-1 rounded border px-3 py-1.5 font-mono text-sm transition-all ${
+                                  (paramValues[p.name] ?? p.default) === o.value
+                                    ? "border-primary/40 bg-primary/20 text-primary"
+                                    : "border-border text-muted-foreground hover:bg-muted"
+                                }`}
+                              >
+                                {o.label}
+                              </button>
+                            ))}
+                          </div>
+                        ) : (
+                          <>
                         <input
                           type="range"
                           min={p.min}
@@ -175,6 +206,8 @@ export default function CommandModal({ open, onClose }: CommandModalProps) {
                           className="w-full bg-background border border-border rounded px-3 py-1.5 font-mono text-sm text-foreground focus:outline-none focus:border-primary"
                           disabled={disabled}
                         />
+                          </>
+                        )}
                       </div>
                     ))}
                   </div>

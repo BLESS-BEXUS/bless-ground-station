@@ -121,6 +121,13 @@ export default function ELinkPage() {
           <Stat label="MCS" value={fmt(d.txMcs, 0)} />
           <Stat label="Freq Dev" value={fmt(d.freqDevHz, 0, "Hz")} />
         </div>
+        <p className="basis-full font-mono text-[11px] text-muted-foreground/70">
+          {d.radioSource === "payload"
+            ? "RSSI / SNR as reported by the payload."
+            : d.radioSource === "ground"
+              ? "RSSI / SNR measured by the ground-station module on the payload's frames (the payload reports 0)."
+              : "No RSSI reading: the payload reports 0 and the ground module has no recent figure."}
+        </p>
       </div>
 
       {/* GNSS / Environment */}

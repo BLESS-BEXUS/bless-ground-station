@@ -423,6 +423,16 @@ describe("ground station backend — normal operation", () => {
     assert.equal(frame[4], 0x21);
     assert.equal(frame[6], 12);
 
+    const modeBefore = payload.received.length;
+    assert.equal((await post("/cmd/SET_HALOW_MODE", { params: [1] })).json().ok, true);
+    await until(() => payload.received.length > modeBefore, 2000, "payload to receive SET_HALOW_MODE");
+    const modeFrame = payload.received[payload.received.length - 1];
+    assert.equal(modeFrame[4], 0x24);
+    assert.equal(modeFrame[5], 1);
+    assert.equal(modeFrame[6], 1);
+    assert.equal((await post("/cmd/SET_HALOW_MODE", { params: [2] })).status, 400);
+    assert.equal((await post("/cmd/SET_HALOW_MODE")).status, 400);
+
     payload.state.muted = true;
     const timeout = await post("/cmd/PING");
     assert.equal(timeout.status, 504);
@@ -699,5 +709,141 @@ describe("ground station backend — restart", () => {
       await backend?.stop();
       fs.rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+// ─── ground-station radio figures ─────────────────────────────────────────────
+
+describe("ground station backend — radio figures from the ground HaLow module", () => {
+  let root: string;
+  let backend: Backend;
+  let feed: Feed;
+
+  before(async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "bless-e2e-rf-"));
+    backend = await startBackend(path.join(root, "work"), path.join(root, "control"), {
+      GS_STATS_FRESH_MS: "2500",
+    });
+    feed = new Feed(backend.httpPort);
+    await feed.opened();
+  });
+
+  after(async () => {
+    feed?.close();
+    await backend?.stop();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const get = (p: string) => request(backend.httpPort, "GET", p);
+  const post = (p: string, body?: string | object) => request(backend.httpPort, "POST", p, body);
+  const lmac = (options: object) => setFlag(backend.controlDir, "lmac", JSON.stringify({ everyMs: 150, ...options }));
+  const lastSnapshot = () => feed.ofType("gs_rf").at(-1)?.data;
+  const lastPoint = async () => {
+    const route = (await get("/route")).json();
+    return route[route.length - 1];
+  };
+
+  it("reads the module's LMAC STATUS dump and publishes RSSI, SNR and noise floor", async () => {
+    await until(async () => (await get("/status")).json().halow.connected === true, 5000, "connected");
+    lmac({ rssi: -67, snr: 31, rxFrames: 12, chipTempC: 36 });
+    await until(() => feed.ofType("gs_rf").length >= 2, 5000, "radio snapshots");
+
+    const snapshot = lastSnapshot();
+    assert.equal(snapshot.rssi, -67);
+    assert.equal(snapshot.snr, 31);
+    assert.equal(snapshot.noiseFloor, -98);            // rssi - snr
+    assert.equal(snapshot.rxFrames, 12);
+    assert.equal(snapshot.chipTempC, 36);
+    assert.equal(snapshot.freqMHz, 866);
+    assert.equal(snapshot.stations, 0);
+  });
+
+  it("exposes the raw dump and the live figures, to check the mapping against the real module", async () => {
+    const reply = (await get("/gs/rf")).json();
+    assert.equal(reply.live.rssi, -67);
+    assert.equal(reply.live.snr, 31);
+    assert.equal(reply.live.noiseFloor, -98);
+    assert.ok(reply.rawBlock[0].startsWith("LMAC STATUS"));
+    assert.ok(reply.rawBlock.some((l: string) => l.startsWith("dbg:") && l.includes("rssi=-67")));
+    assert.ok(reply.snapshots >= 2);
+  });
+
+  it("gives E-Link packets the ground station's figures when the payload sends zeros", async () => {
+    // the payload reports RSSI 0, as it does now
+    await sendUdp(backend.udpPort, telemetryPacket({ count: 1, lat: 67.9, lng: 21.1, alt: 1500, rssi: 0 }));
+    await until(() => feed.ofType("elink_telemetry").length >= 1, 3000, "E-Link telemetry");
+
+    const data = feed.ofType("elink_telemetry")[0].data;
+    assert.equal(data.rssi, 0, "the payload's own value is left as it came");
+    assert.equal(data.gsRssi, -67);
+    assert.equal(data.gsSnr, 31);
+    assert.equal(data.gsNoiseFloor, -98);
+  });
+
+  it("colors the route with the ground station's RSSI when the payload sends 0", async () => {
+    await until(async () => (await lastPoint())?.rssi === -67, 3000, "route point with the ground RSSI");
+    const point = await lastPoint();
+    assert.equal(point.link, "elink");
+    assert.equal(point.rssi, -67);
+  });
+
+  it("writes the ground figures next to each E-Link row and keeps a CSV of the radio dumps", async () => {
+    await sendUdp(backend.udpPort, telemetryPacket({ count: 2, lat: 67.901, lng: 21.101, alt: 1510, rssi: 0 }));
+    await until(async () => (await get("/status")).json().logging.elinkRows >= 2, 3000, "rows logged");
+
+    const logs = path.join(backend.workDir, "logs");
+    const elinkCsv = fs.readdirSync(logs).filter((f) => f.startsWith("elink_live_"));
+    const content = fs.readFileSync(path.join(logs, elinkCsv[0]), "utf-8");
+    const [header, firstRow] = content.split("\n");
+    assert.match(header, /gsRssi,gsSnr,gsFreqDev,gsMcs,gsNoiseFloor,gsPer/);
+    const columns = header.split(",");
+    const cells = firstRow.split(",");
+    assert.equal(cells[columns.indexOf("gsRssi")], "-67");
+    assert.equal(cells[columns.indexOf("gsNoiseFloor")], "-98");
+
+    const rfCsv = fs.readdirSync(logs).filter((f) => f.startsWith("gs_rf_live_"));
+    assert.equal(rfCsv.length, 1);
+    const rfFile = path.join(logs, rfCsv[0]);
+    const rowsInFile = () => fs.readFileSync(rfFile, "utf-8").trim().split(String.fromCharCode(10));
+    // a dump arrives every 150 ms, so give the first one after logging started time to come
+    await until(() => rowsInFile().length >= 2, 3000, "a radio dump logged while logging is on");
+    assert.match(rowsInFile()[0], /rssi,snr,noiseFloor/);
+  });
+
+  it("hands a page that just opened the history, so the charts are not empty after a reload", async () => {
+    const late = new Feed(backend.httpPort);
+    await late.opened();
+    await until(() => late.ofType("history").length === 1, 3000, "history message");
+    const history = late.ofType("history")[0];
+    assert.ok(history.elink.length >= 2);
+    assert.ok(history.gsRf.length >= 2);
+    assert.equal(history.elink[0].packetCount, 1);
+    late.close();
+  });
+
+  it("an idle module (rssi=0, nothing received) gives snapshots without RSSI", async () => {
+    lmac({});                                          // idle dump: rssi=0, rx cnt=0
+    await until(() => lastSnapshot()?.rssi === null, 4000, "idle snapshot");
+    assert.equal(lastSnapshot().snr, null);
+    assert.equal(lastSnapshot().noiseFloor, null);
+  });
+
+  it("does not keep presenting an old reading as current", async () => {
+    await sleep(3000);                                 // longer than GS_STATS_FRESH_MS
+    await sendUdp(backend.udpPort, telemetryPacket({ count: 3, lat: 67.902, lng: 21.102, alt: 1520, rssi: 0 }));
+    await until(() => feed.ofType("elink_telemetry").length >= 3, 3000, "third packet");
+    const data = feed.ofType("elink_telemetry").at(-1).data;
+    assert.equal(data.gsRssi, undefined);
+    assert.equal(data.gsSnr, undefined);
+    await until(async () => (await lastPoint())?.pkt === 3, 3000, "third route point");
+    assert.equal((await lastPoint()).rssi, null);
+  });
+
+  it("an AT command completes while the module prints its dump, without the dump leaking into it", async () => {
+    lmac({ rssi: -70, snr: 28, everyMs: 40 });         // a dump every 40 ms: they interleave
+    await sleep(200);
+    const result = (await post("/halow/config", { name: "TXPOWER", value: "12" })).json();
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.response, ["TXPOWER=12", "OK"]);
   });
 });

@@ -3,7 +3,7 @@ import TripodCalibrationCard from "@/components/TripodCalibrationCard";
 import { useLiveData } from "@/hooks/useLiveData";
 import { useTripodCalibration } from "@/hooks/useTripodCalibration";
 import { fmt } from "@/lib/format";
-import { toTripodAzimuth, toTripodElevation } from "@/lib/tripodCalibration";
+import { calibrationIsStale, toTripodAzimuth, toTripodElevation } from "@/lib/tripodCalibration";
 
 // ─── WGS84 / ECEF / LTC pointing computation ─────────────────────────────────
 // Implements the BEXUS User Manual Chapter 10 coordinate system.
@@ -215,6 +215,8 @@ export default function AntennaPage() {
   const { calibration, setCalibration } = useTripodCalibration();
   const azimuth = trueAzimuth === null ? null : toTripodAzimuth(trueAzimuth, calibration);
   const elevation = trueElevation === null ? null : toTripodElevation(trueElevation, calibration);
+  const station = { lat: parsedLat, lng: parsedLon, alt: parsedAlt };
+  const calibrationStale = calibrationIsStale(calibration, station);
 
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-6">
@@ -227,6 +229,33 @@ export default function AntennaPage() {
             : "Point antenna to the indicated azimuth and elevation to track the balloon."}
           {" "}Update GS coordinates below to match your exact antenna position.
         </p>
+        {calibrationStale && (
+          <div className="mt-3 flex flex-wrap items-center gap-3 rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2">
+            <span className="font-mono text-xs text-destructive">
+              Out of date: the ground-station coordinates changed after calibrating, so the tripod numbers
+              below may be wrong. Recalibrate.
+            </span>
+            <button
+              onClick={() => document.getElementById("tripod-calibration")?.scrollIntoView({ behavior: "smooth", block: "start" })}
+              className="px-3 py-1 rounded-md border border-destructive/60 font-mono text-xs text-destructive hover:bg-destructive/20 transition-all"
+            >
+              Recalibrate ↓
+            </button>
+          </div>
+        )}
+        {!calibration && (
+          <div className="mt-3 flex flex-wrap items-center gap-3 rounded-md border border-warning/40 bg-warning/10 px-3 py-2">
+            <span className="font-mono text-xs text-warning">
+              Not calibrated: these are the true bearing and elevation, not the numbers on the tripod.
+            </span>
+            <button
+              onClick={() => document.getElementById("tripod-calibration")?.scrollIntoView({ behavior: "smooth", block: "start" })}
+              className="px-3 py-1 rounded-md border border-warning/50 font-mono text-xs text-warning hover:bg-warning/20 transition-all"
+            >
+              Calibrate to the tripod ↓
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Main Az/El display */}
@@ -267,6 +296,8 @@ export default function AntennaPage() {
         calibration={calibration}
         computedAz={trueAzimuth}
         computedEl={trueElevation}
+        station={station}
+        stale={calibrationStale}
         onChange={setCalibration}
       />
 

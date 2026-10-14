@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   calibrate,
+  calibrationIsStale,
   loadTripodCalibration,
   normalizeAzimuth,
   parseTripodCalibration,
@@ -88,5 +89,34 @@ describe("saved calibration", () => {
     expect(parseTripodCalibration(JSON.stringify({ azOffset: "x", elOffset: 0, clockwise: true }))).toBeNull();
     expect(parseTripodCalibration(JSON.stringify({ azOffset: 10, elOffset: 0 }))).toBeNull();
     expect(parseTripodCalibration(JSON.stringify({ azOffset: Number.NaN, elOffset: 0, clockwise: true }))).toBeNull();
+  });
+});
+
+describe("a calibration made with other station coordinates", () => {
+  const station = { lat: 67.8856, lng: 21.0786, alt: 310 };
+  const cal = calibrate({
+    computedAz: 40.1, computedEl: 0, tripodAz: 335, tripodEl: 0, clockwise: false, groundStation: station,
+  });
+
+  it("is current while the coordinates are the ones it was made with", () => {
+    expect(calibrationIsStale(cal, station)).toBe(false);
+    expect(calibrationIsStale(cal, { ...station, lat: station.lat + 1e-9 })).toBe(false);   // float noise
+  });
+
+  it("goes stale when the station is moved or re-surveyed", () => {
+    expect(calibrationIsStale(cal, { ...station, lat: 67.87964 })).toBe(true);
+    expect(calibrationIsStale(cal, { ...station, lng: 21.062234 })).toBe(true);
+    expect(calibrationIsStale(cal, { ...station, alt: 484 })).toBe(true);
+  });
+
+  it("cannot tell for a calibration saved before the position was recorded, nor without one", () => {
+    expect(calibrationIsStale({ ...cal, groundStation: undefined }, { ...station, lat: 1 })).toBe(false);
+    expect(calibrationIsStale(null, station)).toBe(false);
+  });
+
+  it("keeps the station position through the browser storage", () => {
+    saveTripodCalibration(cal);
+    expect(loadTripodCalibration()?.groundStation).toEqual(station);
+    window.localStorage.clear();
   });
 });

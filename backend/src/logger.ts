@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import type { BlessPacket } from "./protocol";
+import type { GsRfSnapshot } from "./gsLmac";
 
 const HALOW_HEADER =
   "receivedAt,timestamp,packetCount,latitude,longitude,altitude,gpsFix,gpsSats," +
@@ -49,6 +50,8 @@ function packetToRow(p: BlessPacket, includeGs = false): string {
       String(p.gsSnr ?? ""),
       String(p.gsFreqDev ?? ""),
       String(p.gsMcs ?? ""),
+      String(p.gsNoiseFloor ?? ""),
+      String(p.gsPer ?? ""),
     );
   }
   return base.join(",");
@@ -103,6 +106,54 @@ export class MissionLogger {
 
   close(): void {
     this.stop();
+  }
+
+  isActive(): boolean { return this.active; }
+  getFilePath(): string { return this.filePath; }
+  getRowCount(): number { return this.rowCount; }
+}
+
+const GS_RF_HEADER =
+  "receivedAt,uptimeMs,freqMHz,bwMHz,rssi,snr,noiseFloor,background," +
+  "rxFrames,rxKbps,rxErrPhy,rxErrFcs,rxGain,txFrames,txPerPct,txKbps,txMcs,txPowerIndex," +
+  "chipTempC,vcc,stations\n";
+
+/** One row per "LMAC STATUS" dump of the ground-station HaLow module. */
+export class GsRfLogger {
+  private active = false;
+  private rowCount = 0;
+  private filePath: string;
+
+  constructor(private readonly logDir = "./logs", private readonly baseFilename = "gs_rf_live.csv") {
+    if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+    this.filePath = path.join(logDir, baseFilename);
+  }
+
+  start(sessionId = new Date().toISOString().replace(/[:.]/g, "-")): void {
+    if (this.active) return;
+    const parsed = path.parse(this.baseFilename);
+    this.filePath = path.join(this.logDir, `${parsed.name}_${sessionId}${parsed.ext || ".csv"}`);
+    this.active = true;
+    this.rowCount = 0;
+    fs.writeFileSync(this.filePath, GS_RF_HEADER, "utf-8");
+  }
+
+  stop(): void {
+    this.active = false;
+  }
+
+  write(s: GsRfSnapshot): void {
+    if (!this.active) return;
+    const cell = (v: number | null) => (v === null ? "" : String(v));
+    const row = [
+      new Date(s.t).toISOString(), cell(s.uptimeMs), cell(s.freqMHz), cell(s.bwMHz),
+      cell(s.rssi), cell(s.snr), cell(s.noiseFloor), cell(s.background),
+      cell(s.rxFrames), cell(s.rxKbps), cell(s.rxErrPhy), cell(s.rxErrFcs), cell(s.rxGain),
+      cell(s.txFrames), cell(s.txPerPct), cell(s.txKbps), cell(s.txMcs), cell(s.txPowerIndex),
+      cell(s.chipTempC), cell(s.vcc), cell(s.stations),
+    ].join(",");
+    fs.appendFileSync(this.filePath, row + "\n", "utf-8");
+    this.rowCount++;
   }
 
   isActive(): boolean { return this.active; }

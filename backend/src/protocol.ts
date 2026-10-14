@@ -89,6 +89,8 @@ export interface BlessPacket {
   gsSnr?: number;
   gsFreqDev?: number;
   gsMcs?: number;
+  gsNoiseFloor?: number;
+  gsPer?: number;
 }
 
 function crc16(buf: Buffer, length: number): number {
@@ -172,6 +174,7 @@ export const CMD = {
   SET_TX_POWER: 0x21,
   SET_MCS_MODE: 0x22,
   RF_SILENCE: 0x23,
+  SET_HALOW_MODE: 0x24,
   SAVE_DATA: 0x30,
   SEND_HALOW: 0x31,
   SEND_ELINK: 0x32,

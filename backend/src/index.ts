@@ -14,7 +14,10 @@ import {
   PACKET_SIZE,
 } from "./protocol";
 import type { BlessPacket, CmdId } from "./protocol";
-import { MissionEventLogger, MissionLogger } from "./logger";
+import { GsRfLogger, MissionEventLogger, MissionLogger } from "./logger";
+import { LmacStatusParser } from "./gsLmac";
+import type { GsRfSnapshot } from "./gsLmac";
+import { GsRadioLive } from "./gsRadio";
 import { RouteTracker } from "./track";
 import type { RouteLink } from "./track";
 import { TileCache, handleTileRequest } from "./tiles";
@@ -24,6 +27,7 @@ import {
   displayValue,
   validateAtCommand,
 } from "./halowAt";
+import { classifyResponseLine } from "./halowAt";
 import type { AtResult, GroundAtCommand } from "./halowAt";
 
 // ─── Config ──────────────────────────────────────────────────────────────────
@@ -48,7 +52,7 @@ const halowLogger = new MissionLogger(
   "rssi,snr,freqDevHz,successRate,noiseFloor,txMcs," +
   "systemState,halowCurrMa,chipTempC,heaterPower," +
   "pressurePa,extTempC,intTempC,extHumidityRh,radiationCps,errorFlags,halowStatus," +
-  "gsRssi,gsSnr,gsFreqDev,gsMcs\n",
+  "gsRssi,gsSnr,gsFreqDev,gsMcs,gsNoiseFloor,gsPer\n",
   true
 );
 const elinkLogger = new MissionLogger(
@@ -56,9 +60,11 @@ const elinkLogger = new MissionLogger(
   "receivedAt,timestamp,packetCount,latitude,longitude,altitude,gpsFix,gpsSats," +
   "rssi,snr,freqDevHz,successRate,noiseFloor,txMcs," +
   "systemState,halowCurrMa,chipTempC,heaterPower," +
-  "pressurePa,extTempC,intTempC,extHumidityRh,radiationCps,errorFlags,halowStatus\n",
-  false
+  "pressurePa,extTempC,intTempC,extHumidityRh,radiationCps,errorFlags,halowStatus," +
+  "gsRssi,gsSnr,gsFreqDev,gsMcs,gsNoiseFloor,gsPer\n",
+  true
 );
+const gsRfLogger = new GsRfLogger("./logs", "gs_rf_live.csv");
 const missionEventLogger = new MissionEventLogger("./logs", "mission_events.csv");
 halowLogger.open();
 elinkLogger.open();
@@ -73,7 +79,8 @@ routeTracker.load();
 const tileCache = new TileCache(path.resolve(process.env.TILE_CACHE_DIR ?? "./tiles"));
 
 function recordRoute(packet: BlessPacket, via: RouteLink): void {
-  const point = routeTracker.record(packet, via);
+  // The payload reports RSSI 0 now; the ground station's own reading colors the map
+  const point = routeTracker.record(packet, via, Date.now(), packet.gsRssi ?? null);
   if (point) broadcast({ type: "route_point", point });
 }
 
@@ -82,6 +89,7 @@ function startLogging(): void {
     const sessionId = new Date().toISOString().replace(/[:.]/g, "-");
     halowLogger.start(sessionId);
     elinkLogger.start(sessionId);
+    gsRfLogger.start(sessionId);
     missionEventLogger.start(sessionId);
   }
   broadcast({ type: "logging", active: true });
@@ -96,26 +104,38 @@ function autoStartLogging(): void {
   startLogging();
 }
 
-// ─── GS RF stats (from T-HaLow rx0/tx0 ASCII lines) ─────────────────────────
+// ─── Ground-station radio figures (from the T-HaLow module's own output) ─────
+// The payload sends RSSI / SNR / noise floor / frequency deviation as 0, so these
+// come from what the ground module measures on the frames it receives: the
+// periodic "LMAC STATUS" dump and the "rx0:" / "tx0:" lines.
 
-let gsRfStats = { rssi: 0, snr: 0, freqDev: 0, mcs: 0, per: 0, bw: "" };
+const GS_STATS_FRESH_MS = Number(process.env.GS_STATS_FRESH_MS ?? 60_000);
+const gsRadio = new GsRadioLive(GS_STATS_FRESH_MS);
+const lmacParser = new LmacStatusParser();
+/** Recent serial lines that are neither the LMAC dump nor an AT reply: shows what else the module prints. */
+const RECENT_OTHER_LINES = 40;
+const recentOtherLines: { t: number; line: string }[] = [];
+let rx0LinesSeen = 0;
 
-function parseRx0Line(line: string): void {
-  const m1 = line.match(/rssi=(-?\d+)/);
-  const m2 = line.match(/freqDev=(\d+)/);
-  const m3 = line.match(/mcs=(\d+)/);
-  const m4 = line.match(/bw=(\S+)/);
-  if (m1) gsRfStats.rssi = parseInt(m1[1]);
-  if (m2) gsRfStats.freqDev = parseInt(m2[1]);
-  if (m3) gsRfStats.mcs = parseInt(m3[1]);
-  if (m4) gsRfStats.bw = m4[1];
+// What the web pages get on connect, so charts survive a page reload
+const HISTORY_LIMIT = Number(process.env.TELEMETRY_HISTORY_LIMIT ?? 4000);
+const elinkHistory: BlessPacket[] = [];
+const gsRfHistory: GsRfSnapshot[] = [];
+let lmacBlock: string[] = [];
+let lastLmacBlock: string[] = [];
+
+function remember<T>(list: T[], item: T): void {
+  list.push(item);
+  if (list.length > HISTORY_LIMIT) list.splice(0, list.length - HISTORY_LIMIT);
 }
 
-function parseTx0Line(line: string): void {
-  const m1 = line.match(/snr=(\d+)/);
-  const m2 = line.match(/per=\s*(\d+)/);
-  if (m1) gsRfStats.snr = parseInt(m1[1]);
-  if (m2) gsRfStats.per = parseInt(m2[1]);
+function onGsRfSnapshot(snapshot: GsRfSnapshot): void {
+  gsRadio.fromSnapshot(snapshot);
+  remember(gsRfHistory, snapshot);
+  gsRfLogger.write(snapshot);
+  lastLmacBlock = lmacBlock;
+  lmacBlock = [];
+  broadcast({ type: "gs_rf", data: snapshot });
 }
 
 // ─── HaLow serial ─────────────────────────────────────────────────────────────
@@ -181,15 +201,12 @@ function processHalowData(): void {
         if (packet) {
           lastHalowPacketAt = Date.now();
           halowRxCount++;
-          packet.gsRssi = gsRfStats.rssi;
-          packet.gsSnr = gsRfStats.snr;
-          packet.gsFreqDev = gsRfStats.freqDev;
-          packet.gsMcs = gsRfStats.mcs;
+          gsRadio.attach(packet);
           autoStartLogging();
           halowLogger.write(packet);
           recordRoute(packet, "halow");
           broadcast({ type: "telemetry", data: packet });
-          console.log(`[halow] #${halowRxCount} alt=${packet.altitude}m rssi=${packet.rssi}dBm gsRssi=${gsRfStats.rssi}`);
+          console.log(`[halow] #${halowRxCount} alt=${packet.altitude}m rssi=${packet.rssi}dBm gsRssi=${packet.gsRssi ?? "-"}`);
         } else {
           console.warn(`[halow] Parse failed (${payload.length}B), sync=0x${payload.length >= 2 ? payload.readUInt16LE(0).toString(16) : "??"}`);
         }
@@ -219,9 +236,22 @@ function processHalowData(): void {
       }
       continue;
     }
+    // The module's periodic radio dump. An OK / ERROR line in the middle of it still
+    // belongs to a pending AT command, so those are left for the command channel.
+    const startsDump = /^LMAC STATUS/i.test(line);
+    if ((lmacParser.isReading() || startsDump) && classifyResponseLine(line) === "other") {
+      if (startsDump) lmacBlock = [];
+      lmacBlock.push(line);
+      const snapshot = lmacParser.feed(line);
+      if (snapshot) onGsRfSnapshot(snapshot);
+      continue;
+    }
     if (groundAt.handleLine(line)) continue;
-    if (line.startsWith("rx0:")) parseRx0Line(line);
-    else if (line.startsWith("tx0:")) parseTx0Line(line);
+    if (gsRadio.fromRx0Line(line)) { rx0LinesSeen++; continue; }
+    if (!gsRadio.fromTx0Line(line)) {
+      recentOtherLines.push({ t: Date.now(), line: line.slice(0, 200) });
+      if (recentOtherLines.length > RECENT_OTHER_LINES) recentOtherLines.shift();
+    }
   }
 }
 
@@ -489,6 +519,8 @@ function handleElinkTelemetry(frame: Buffer): boolean {
 
   elinkRxCount++;
   lastElinkActivityAt = Date.now();
+  gsRadio.attach(packet);
+  remember(elinkHistory, packet);
   autoStartLogging();
   elinkLogger.write(packet);
   recordRoute(packet, "elink");
@@ -797,6 +829,9 @@ const httpServer = http.createServer((req, res) => {
         }
 
         const params = parseCommandParams(body);
+        if (cmdName === "SET_HALOW_MODE" && (params.length !== 1 || params[0] > 1)) {
+          throw new BadRequestError("SET_HALOW_MODE needs one parameter: 0 = AP, 1 = GROUP");
+        }
         const payload = Buffer.from(params);
         const frame = buildCommand(CMD[cmdName] as CmdId, payload);
         await sendElinkFrame(frame);
@@ -811,6 +846,27 @@ const httpServer = http.createServer((req, res) => {
         res.end(JSON.stringify({ ok: false, error: message }));
       }
     }); return;
+  }
+
+  // The latest parsed radio snapshot and the raw dump it came from
+  if (req.method === "GET" && req.url === "/gs/rf") {
+    res.writeHead(200, cors);
+    res.end(JSON.stringify({
+      latest: gsRfHistory[gsRfHistory.length - 1] ?? null,
+      rawBlock: lastLmacBlock,
+      otherLines: recentOtherLines,
+      rx0LinesSeen,
+      snapshots: gsRfHistory.length,
+      live: {
+        rssi: gsRadio.get("rssi"),
+        snr: gsRadio.get("snr"),
+        noiseFloor: gsRadio.noiseFloor(),
+        freqDev: gsRadio.get("freqDev"),
+        mcs: gsRadio.get("mcs"),
+        per: gsRadio.get("per"),
+      },
+    }));
+    return;
   }
 
   if (req.method === "GET" && req.url === "/status") {
@@ -849,6 +905,7 @@ const httpServer = http.createServer((req, res) => {
     autoLoggingHandled = true;
     halowLogger.stop();
     elinkLogger.stop();
+    gsRfLogger.stop();
     broadcast({ type: "logging", active: false, halowRows: halowLogger.getRowCount(), elinkRows: elinkLogger.getRowCount() });
     res.writeHead(200, cors);
     res.end(JSON.stringify({ ok: true, active: false }));
@@ -950,6 +1007,7 @@ wss.on("connection", (ws) => {
   }));
   ws.send(JSON.stringify({ type: "logging", active: halowLogger.isActive() }));
   ws.send(JSON.stringify({ type: "route", points: routeTracker.list() }));
+  ws.send(JSON.stringify({ type: "history", elink: elinkHistory, gsRf: gsRfHistory }));
   ws.on("close", () => console.log("[ws] Client disconnected"));
 });
 

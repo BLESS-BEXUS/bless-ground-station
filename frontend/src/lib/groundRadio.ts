@@ -2,7 +2,8 @@
 // firmware sends to its own module: BLESS-Source-Code, Core/Inc/txhalow.h).
 
 export type GroundAtCommand =
-  | "TXPOWER" | "TX_MCS" | "BSS_BW" | "FREQ_RANGE" | "ACKTMO" | "MODE" | "SSID" | "PSK";
+  | "TXPOWER" | "TX_MCS" | "BSS_BW" | "FREQ_RANGE" | "ACKTMO" | "MODE" | "SSID" | "PSK"
+  | "RSSI" | "JOINGROUP" | "SYSDBG";
 
 /** Mission configuration of the payload module, shown as a reference next to each setting. */
 export const PAYLOAD_MISSION_DEFAULTS = {
@@ -49,7 +50,7 @@ export function distanceForAckTimeout(ackTimeout: number): number {
 }
 
 /** Settings that, if changed on one end only, break the link until both agree. */
-export const LINK_BREAKING: readonly GroundAtCommand[] = ["BSS_BW", "FREQ_RANGE", "MODE", "SSID", "PSK"];
+export const LINK_BREAKING: readonly GroundAtCommand[] = ["BSS_BW", "FREQ_RANGE", "MODE", "SSID", "PSK", "JOINGROUP"];
 
 export function changeBreaksLink(name: GroundAtCommand): boolean {
   return LINK_BREAKING.includes(name);

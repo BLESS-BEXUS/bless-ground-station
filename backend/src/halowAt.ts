@@ -16,6 +16,10 @@ export const GROUND_AT_COMMANDS = [
   "MODE",
   "SSID",
   "PSK",
+  // Read-outs and group setup (LilyGO T-Halow-RJ45 docs/AT_cmd.md)
+  "RSSI",
+  "JOINGROUP",
+  "SYSDBG",
 ] as const;
 
 export type GroundAtCommand = (typeof GROUND_AT_COMMANDS)[number];
@@ -68,9 +72,28 @@ export function validateAtCommand(name: string, rawValue: string): AtValidation 
     case "ACKTMO":
       return integerIn(raw, 0, 65535, "ACK timeout");
     case "MODE":
-      return ["AP", "STA"].includes(raw.toUpperCase())
+      return ["AP", "STA", "GROUP"].includes(raw.toUpperCase())
         ? { ok: true, value: raw.toUpperCase() }
-        : { ok: false, error: "Mode must be AP or STA" };
+        : { ok: false, error: "Mode must be AP, STA or GROUP" };
+    case "RSSI":
+      // Device index (1..N) or the peer's MAC address
+      return /^\d{1,3}$/.test(raw) && Number(raw) >= 1
+        || /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/i.test(raw)
+        ? { ok: true, value: raw.toLowerCase() }
+        : { ok: false, error: "RSSI takes a device index (1, 2, ...) or a MAC address" };
+    case "JOINGROUP": {
+      // group address and AID; AID 0 = no heartbeats (one-way broadcast)
+      const match = /^((?:[0-9a-f]{2}:){5}[0-9a-f]{2})\s*,\s*(\d{1,3})$/i.exec(raw);
+      return match
+        ? { ok: true, value: `${match[1].toLowerCase()},${Number(match[2])}` }
+        : { ok: false, error: "JOINGROUP takes a group address and an AID, e.g. 11:22:33:44:55:66,0" };
+    }
+    case "SYSDBG": {
+      const match = /^(LMAC|WNB)\s*,\s*([01])$/i.exec(raw);
+      return match
+        ? { ok: true, value: `${match[1].toUpperCase()},${match[2]}` }
+        : { ok: false, error: "SYSDBG takes LMAC or WNB and 0 or 1, e.g. LMAC,1" };
+    }
     case "SSID":
       return /^[\x20-\x7e]{1,32}$/.test(raw)
         ? { ok: true, value: raw }

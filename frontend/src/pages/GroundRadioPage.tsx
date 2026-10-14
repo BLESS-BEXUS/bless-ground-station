@@ -35,6 +35,7 @@ interface ConfigStatus {
 
 const ALL_COMMANDS: GroundAtCommand[] = [
   "TXPOWER", "TX_MCS", "BSS_BW", "FREQ_RANGE", "ACKTMO", "MODE", "SSID", "PSK",
+  "RSSI", "JOINGROUP", "SYSDBG",
 ];
 
 const inputClass =
@@ -257,7 +258,10 @@ export default function GroundRadioPage() {
         <div className="mt-4 space-y-3">
           <p className="font-mono text-xs text-muted-foreground">
             Same command set as the payload firmware. MODE, SSID and PSK define the network: the payload
-            is the access point (AP), so the ground module normally stays as STA.
+            is the access point (AP), so the ground module normally stays as STA. In GROUP mode (payload
+            sends broadcast, longer range) set MODE to GROUP on both ends.
+            RSSI takes a device index or MAC (RSSI=1), JOINGROUP takes address,AID (AID 0 sends no
+            heartbeats), SYSDBG takes LMAC,1 / LMAC,0 to start or stop the module's radio dump.
           </p>
           <div className="flex flex-wrap items-center gap-2">
             <span className="font-mono text-sm text-muted-foreground">AT+</span>

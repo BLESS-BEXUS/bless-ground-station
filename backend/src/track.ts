@@ -76,14 +76,20 @@ export class RouteTracker {
     this.points = loaded.slice(-this.maxPoints);
   }
 
-  record(packet: BlessPacket, via: RouteLink, now = Date.now()): RoutePoint | null {
+  record(
+    packet: BlessPacket,
+    via: RouteLink,
+    now = Date.now(),
+    /** The ground station's own RSSI, used when the payload's reading is not plausible. */
+    rssiFallback: number | null = null,
+  ): RoutePoint | null {
     if (!hasValidFix(packet)) return null;
 
     if (via === "halow") this.lastHalowFixAt = now;
     const halowRecent = this.lastHalowFixAt > 0 && now - this.lastHalowFixAt <= this.halowWindowMs;
     const link: RouteLink = halowRecent ? "halow" : "elink";
 
-    const rssi = validRssi(packet.rssi);
+    const rssi = validRssi(packet.rssi) ?? (rssiFallback === null ? null : validRssi(rssiFallback));
     // Same spot, same link and same reading adds nothing; a new RSSI at the same
     // spot is still a sample worth keeping for the signal map.
     const last = this.points[this.points.length - 1];
