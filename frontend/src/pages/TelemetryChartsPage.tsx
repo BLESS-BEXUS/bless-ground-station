@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLiveData } from "@/hooks/useLiveData";
 import {
-  buildRadioSeries,
+  buildGroundRadioSeries,
+  buildPayloadRadioSeries,
   downsample,
   groundSpeedKmh,
   packetIntervals,
@@ -85,12 +86,16 @@ export default function TelemetryChartsPage() {
       mcs: s.mcs,
       state: s.state,
     }));
-    const radio = buildRadioSeries(samples, dumps);
+    // one series per provider: what the payload measured, and what the ground module measured
+    const payloadRadio = buildPayloadRadioSeries(samples);
+    const groundRadio = buildGroundRadioSeries(samples, dumps);
     return {
       rows: downsample(rows, MAX_POINTS) as ChartRow[],
       raw: rows,
-      radio: downsample(radio, MAX_POINTS) as unknown as ChartRow[],
-      radioRaw: radio,
+      payloadRadio: downsample(payloadRadio, MAX_POINTS) as unknown as ChartRow[],
+      payloadRadioRaw: payloadRadio,
+      groundRadio: downsample(groundRadio, MAX_POINTS) as unknown as ChartRow[],
+      groundRadioRaw: groundRadio,
       moduleRows: downsample(
         dumps.map((d) => ({ t: d.t, chip: d.chipTempC, vcc: d.vcc, per: d.txPerPct, mcs: d.txMcs, kbps: d.rxKbps })),
         MAX_POINTS,
@@ -100,13 +105,13 @@ export default function TelemetryChartsPage() {
   }, [samples, dumps]);
 
   const stat = (key: keyof (typeof view.raw)[number]) => seriesStats(view.raw.map((r) => r[key] as number | null));
-  const radioStat = (key: "rssi" | "snr" | "noiseFloor" | "freqDevHz") =>
-    seriesStats(view.radioRaw.map((r) => r[key]));
+  const payloadStat = (key: "rssi" | "snr" | "noiseFloor" | "freqDevHz") =>
+    seriesStats(view.payloadRadioRaw.map((r) => r[key]));
+  const groundStat = (key: "rssi" | "snr" | "noiseFloor" | "freqDevHz") =>
+    seriesStats(view.groundRadioRaw.map((r) => r[key]));
   const lastSample = elinkSamples[elinkSamples.length - 1];
   const lastAge = lastSample ? now - lastSample.t : null;
   const live = lastAge !== null && lastAge < 10_000;
-  const radioSource = lastSample?.radioSource ?? null;
-  const radioBadge = radioSource === "payload" ? "payload" : radioSource === "ground" ? "ground module" : "ground module";
 
   const one = (key: string, label: string, color: string, extra: Partial<SeriesSpec> = {}): SeriesSpec[] => [
     { key, label, color, ...extra },
@@ -159,25 +164,59 @@ export default function TelemetryChartsPage() {
       </Section>
 
       <Section title="Radio link">
-        <ChartCard title="RSSI" unit="dBm" stats={radioStat("rssi")} color={CHART_COLORS.amber} badge={radioBadge}
-          emptyMessage="No RSSI yet — waiting for the ground module's status dump">
-          <TimeSeriesChart data={view.radio} series={one("rssi", "RSSI", CHART_COLORS.amber, { unit: "dBm" })}
+        <p className="xl:col-span-2 font-mono text-xs text-muted-foreground">
+          Each end of the link measures the frames it receives from the other, so every figure has two readings:
+          the payload's (the ground station's frames, as the payload sees them) and the ground module's (the payload's
+          frames). Transmit powers, antennas and receivers differ, so the values differ. Each chart has one provider
+          and nothing fills the other's gaps.
+        </p>
+        <ChartCard title="RSSI · payload" unit="dBm" stats={payloadStat("rssi")} color={CHART_COLORS.teal} badge="payload"
+          emptyMessage="The payload reports no RSSI (it sends 0 when it has no reading)">
+          <TimeSeriesChart data={view.payloadRadio} series={one("rssi", "RSSI (payload)", CHART_COLORS.teal, { unit: "dBm" })}
             references={[{ y: RSSI_SENSITIVITY_DBM, label: "sensitivity", color: CHART_COLORS.coral }]} syncId={SYNC} />
         </ChartCard>
-        <ChartCard title="SNR" unit="dB" stats={radioStat("snr")} color={CHART_COLORS.sky} badge={radioBadge}>
-          <TimeSeriesChart data={view.radio} series={one("snr", "SNR", CHART_COLORS.sky, { unit: "dB" })} syncId={SYNC} />
+        <ChartCard title="RSSI · ground station" unit="dBm" stats={groundStat("rssi")} color={CHART_COLORS.amber} badge="ground module"
+          emptyMessage="No RSSI yet — waiting for the ground module's status dump">
+          <TimeSeriesChart data={view.groundRadio} series={one("rssi", "RSSI (ground)", CHART_COLORS.amber, { unit: "dBm" })}
+            references={[{ y: RSSI_SENSITIVITY_DBM, label: "sensitivity", color: CHART_COLORS.coral }]} syncId={SYNC} />
         </ChartCard>
-        <ChartCard title="Noise floor" unit="dBm" stats={radioStat("noiseFloor")} color={CHART_COLORS.rose} badge={radioBadge}>
-          <TimeSeriesChart data={view.radio} series={one("noiseFloor", "Noise floor", CHART_COLORS.rose, { unit: "dBm" })} syncId={SYNC} />
+        <ChartCard title="SNR · payload" unit="dB" stats={payloadStat("snr")} color={CHART_COLORS.teal} badge="payload"
+          emptyMessage="The payload reports no SNR (it sends 0 when it has no reading)">
+          <TimeSeriesChart data={view.payloadRadio} series={one("snr", "SNR (payload)", CHART_COLORS.teal, { unit: "dB" })} syncId={SYNC} />
         </ChartCard>
-        <ChartCard title="Frequency deviation" unit="Hz" decimals={0} stats={radioStat("freqDevHz")} color={CHART_COLORS.violet} badge={radioBadge}>
-          <TimeSeriesChart data={view.radio} series={one("freqDevHz", "Freq. deviation", CHART_COLORS.violet, { unit: "Hz", decimals: 0 })} syncId={SYNC} />
+        <ChartCard title="SNR · ground station" unit="dB" stats={groundStat("snr")} color={CHART_COLORS.amber} badge="ground module"
+          emptyMessage="No SNR yet — waiting for the ground module's status dump">
+          <TimeSeriesChart data={view.groundRadio} series={one("snr", "SNR (ground)", CHART_COLORS.amber, { unit: "dB" })} syncId={SYNC} />
         </ChartCard>
-        <ChartCard title="Packet delivery rate" unit="%" decimals={0} stats={stat("pdr")} color={CHART_COLORS.green} badge="payload">
-          <TimeSeriesChart data={view.rows} series={one("pdr", "Success rate", CHART_COLORS.green, { unit: "%", decimals: 0 })} yDomain={[0, 100]} syncId={SYNC} />
+        <ChartCard title="Noise floor · payload" unit="dBm" stats={payloadStat("noiseFloor")} color={CHART_COLORS.teal} badge="payload"
+          emptyMessage="The payload reports no noise floor (it sends 0 when it has no reading)">
+          <TimeSeriesChart data={view.payloadRadio} series={one("noiseFloor", "Noise floor (payload)", CHART_COLORS.teal, { unit: "dBm" })} syncId={SYNC} />
         </ChartCard>
-        <ChartCard title="TX MCS" decimals={0} stats={stat("mcs")} color={CHART_COLORS.teal} badge="payload">
+        <ChartCard title="Noise floor · ground station" unit="dBm" stats={groundStat("noiseFloor")} color={CHART_COLORS.amber} badge="ground module"
+          emptyMessage="No noise floor yet — waiting for the ground module's status dump">
+          <TimeSeriesChart data={view.groundRadio} series={one("noiseFloor", "Noise floor (ground)", CHART_COLORS.amber, { unit: "dBm" })} syncId={SYNC} />
+        </ChartCard>
+        <ChartCard title="Frequency deviation · payload" unit="Hz" decimals={0} stats={payloadStat("freqDevHz")} color={CHART_COLORS.teal} badge="payload"
+          emptyMessage="The payload reports no frequency deviation (it sends 0 when it has no reading)">
+          <TimeSeriesChart data={view.payloadRadio} series={one("freqDevHz", "Frequency deviation (payload)", CHART_COLORS.teal, { unit: "Hz", decimals: 0 })} syncId={SYNC} />
+        </ChartCard>
+        <ChartCard title="Frequency deviation · ground station" unit="Hz" decimals={0} stats={groundStat("freqDevHz")} color={CHART_COLORS.amber} badge="ground module"
+          emptyMessage="No frequency deviation yet — waiting for the ground module's status dump">
+          <TimeSeriesChart data={view.groundRadio} series={one("freqDevHz", "Frequency deviation (ground)", CHART_COLORS.amber, { unit: "Hz", decimals: 0 })} syncId={SYNC} />
+        </ChartCard>
+        <ChartCard title="Packet delivery rate · payload" unit="%" decimals={0} stats={stat("pdr")} color={CHART_COLORS.teal} badge="payload">
+          <TimeSeriesChart data={view.rows} series={one("pdr", "Success rate", CHART_COLORS.teal, { unit: "%", decimals: 0 })} yDomain={[0, 100]} syncId={SYNC} />
+        </ChartCard>
+        <ChartCard title="Packet error rate · ground station" unit="%" decimals={0} stats={seriesStats(view.moduleRaw.map((d) => d.txPerPct))}
+          color={CHART_COLORS.amber} badge="ground module" emptyMessage="Waiting for the ground module's status dump">
+          <TimeSeriesChart data={view.moduleRows} series={one("per", "Error rate", CHART_COLORS.amber, { unit: "%", decimals: 0 })} yDomain={[0, 100]} syncId={SYNC} />
+        </ChartCard>
+        <ChartCard title="TX MCS · payload" decimals={0} stats={stat("mcs")} color={CHART_COLORS.teal} badge="payload">
           <TimeSeriesChart data={view.rows} series={one("mcs", "MCS", CHART_COLORS.teal, { decimals: 0, kind: "step" })} syncId={SYNC} />
+        </ChartCard>
+        <ChartCard title="TX MCS · ground station" decimals={0} stats={seriesStats(view.moduleRaw.map((d) => d.txMcs))}
+          color={CHART_COLORS.amber} badge="ground module" emptyMessage="Waiting for the ground module's status dump">
+          <TimeSeriesChart data={view.moduleRows} series={one("mcs", "MCS", CHART_COLORS.amber, { decimals: 0, kind: "step" })} syncId={SYNC} />
         </ChartCard>
         <ChartCard title="Ground module chip temperature" unit="°C" stats={seriesStats(view.moduleRaw.map((d) => d.chipTempC))}
           color={CHART_COLORS.coral} badge="ground module" emptyMessage="Waiting for the ground module's status dump">

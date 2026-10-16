@@ -1,4 +1,4 @@
-import { resolveRadio, type RadioSource } from "./radio";
+import { groundRadio, payloadRadio } from "./radio";
 
 // ─── Samples ──────────────────────────────────────────────────────────────────
 
@@ -13,11 +13,16 @@ export interface TelemetrySample {
   alt: number | null;
   sats: number | null;
   fix: boolean | null;
+  /** What the payload measured of the ground station's frames (null when it has no reading). */
   rssi: number | null;
   snr: number | null;
   noiseFloor: number | null;
   freqDevHz: number | null;
-  radioSource: RadioSource | null;
+  /** What the ground station's module measured of the payload's frames. Never mixed with the above. */
+  gsRssi: number | null;
+  gsSnr: number | null;
+  gsNoiseFloor: number | null;
+  gsFreqDev: number | null;
   pdr: number | null;
   mcs: number | null;
   gsMcs: number | null;
@@ -41,8 +46,10 @@ export function sampleFromPacket(raw: unknown, fallbackTime = Date.now()): Telem
   if (!raw || typeof raw !== "object") return null;
   const p = raw as Record<string, unknown>;
   const parsedTime = typeof p.receivedAt === "string" ? Date.parse(p.receivedAt) : NaN;
-  const radio = resolveRadio({
+  const payload = payloadRadio({
     rssi: num(p.rssi), snr: num(p.snr), noiseFloor: num(p.noiseFloor), freqDevHz: num(p.freqDevHz),
+  });
+  const ground = groundRadio({
     gsRssi: num(p.gsRssi), gsSnr: num(p.gsSnr), gsNoiseFloor: num(p.gsNoiseFloor), gsFreqDev: num(p.gsFreqDev),
   });
   return {
@@ -54,11 +61,14 @@ export function sampleFromPacket(raw: unknown, fallbackTime = Date.now()): Telem
     alt: num(p.altitude),
     sats: num(p.gpsSats),
     fix: typeof p.gpsFix === "boolean" ? p.gpsFix : null,
-    rssi: radio.rssi,
-    snr: radio.snr,
-    noiseFloor: radio.noiseFloor,
-    freqDevHz: radio.freqDevHz,
-    radioSource: radio.source,
+    rssi: payload.rssi,
+    snr: payload.snr,
+    noiseFloor: payload.noiseFloor,
+    freqDevHz: payload.freqDevHz,
+    gsRssi: ground.rssi,
+    gsSnr: ground.snr,
+    gsNoiseFloor: ground.noiseFloor,
+    gsFreqDev: ground.freqDevHz,
     pdr: num(p.successRate),
     mcs: num(p.txMcs),
     gsMcs: num(p.gsMcs),
@@ -189,7 +199,7 @@ export function seriesStats(values: (number | null | undefined)[]): SeriesStats 
   };
 }
 
-// ─── Radio series: ground-module dumps merged with the figures on each packet ──
+// ─── Radio series: one per provider, never merged ─────────────────────────────
 
 export interface RadioPoint {
   t: number;
@@ -200,19 +210,32 @@ export interface RadioPoint {
 }
 
 /**
- * RSSI, SNR and noise floor from the ground module's own dumps, plus the figures
- * that rode on each E-Link packet (which also carry the frequency deviation).
- * Sorted by time; a point keeps only the fields that have a value.
+ * What the payload measured, one point per E-Link packet that carried a reading. Points
+ * the payload sent as 0 are left out: nothing from the ground station fills them in.
  */
-export function buildRadioSeries(samples: TelemetrySample[], dumps: GsRfView[]): RadioPoint[] {
+export function buildPayloadRadioSeries(samples: TelemetrySample[]): RadioPoint[] {
+  const points: RadioPoint[] = [];
+  for (const s of samples) {
+    if (s.rssi === null && s.snr === null && s.noiseFloor === null && s.freqDevHz === null) continue;
+    points.push({ t: s.t, rssi: s.rssi, snr: s.snr, noiseFloor: s.noiseFloor, freqDevHz: s.freqDevHz });
+  }
+  return points;
+}
+
+/**
+ * What the ground station's module measured: RSSI, SNR and noise floor from its own status
+ * dumps, and the frequency deviation it reports with the packets. Idle dumps (no RSSI) are
+ * not points. Sorted by time.
+ */
+export function buildGroundRadioSeries(samples: TelemetrySample[], dumps: GsRfView[]): RadioPoint[] {
   const points: RadioPoint[] = [];
   for (const d of dumps) {
     if (d.rssi === null) continue;
     points.push({ t: d.t, rssi: d.rssi, snr: d.snr, noiseFloor: d.noiseFloor, freqDevHz: null });
   }
   for (const s of samples) {
-    if (s.rssi === null && s.freqDevHz === null) continue;
-    points.push({ t: s.t, rssi: s.rssi, snr: s.snr, noiseFloor: s.noiseFloor, freqDevHz: s.freqDevHz });
+    if (s.gsFreqDev === null) continue;
+    points.push({ t: s.t, rssi: null, snr: null, noiseFloor: null, freqDevHz: s.gsFreqDev });
   }
   return points.sort((a, b) => a.t - b.t);
 }

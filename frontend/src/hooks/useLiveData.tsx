@@ -9,7 +9,7 @@ import React, {
 import { LINK_FRESHNESS_MS, selectTelemetrySource } from "@/lib/linkSelection";
 import { HTTP_URL, WS_URL } from "@/lib/backendUrl";
 import { normalizeRoutePoint, type RoutePoint } from "@/lib/route";
-import { resolveRadio } from "@/lib/radio";
+import { groundRadio, payloadRadio } from "@/lib/radio";
 import {
   gsRfFromSnapshot,
   sampleFromPacket,
@@ -18,6 +18,7 @@ import {
 } from "@/lib/telemetrySeries";
 import {
   GROUND_STATION_STORAGE_KEY,
+  isGroundStationConfigured,
   loadGroundStation,
   saveGroundStation,
   type GroundStationLocation,
@@ -33,7 +34,7 @@ export interface TelemetryData {
   altitude: number | null;
   gpsFix: boolean | null;
   gpsSats: number | null;
-  // RF
+  // RF measured by the payload (of the ground station's frames); null when it reports 0
   rssi: number | null;
   snr: number | null;
   freqDevHz: number | null;
@@ -41,8 +42,11 @@ export interface TelemetryData {
   noiseFloor: number | null;
   txMcs: number | null;
   halowStatus: "ACTIVE" | "DEGRADED" | "INTERRUPTED" | null;
-  /** Where RSSI / SNR / noise floor come from: the payload's own report or the ground module's reading. */
-  radioSource?: "payload" | "ground" | null;
+  // RF measured by the ground station's module (of the payload's frames). Never mixed with the above.
+  gsRssi: number | null;
+  gsSnr: number | null;
+  gsNoiseFloor: number | null;
+  gsFreqDev: number | null;
   // Hardware
   systemState: number | null;
   systemStateLabel: "INIT" | "IDLE" | "FLIGHT" | "UNKNOWN" | null;
@@ -61,7 +65,10 @@ export interface TelemetryData {
   errorFlags: number | null;
   receivedAt: string | null;
   // Derived history
-  rssiHistory: { time: number; rssi: number; snr: number }[];
+  /** Payload-measured RSSI / SNR, one point per packet that carried a reading. */
+  rssiHistory: { time: number; rssi: number; snr: number | null }[];
+  /** Ground-station-measured RSSI / SNR, in the same time base. */
+  gsRssiHistory: { time: number; rssi: number; snr: number | null }[];
   trajectoryHistory: { lat: number; lng: number; alt: number }[];
 }
 
@@ -77,6 +84,8 @@ export interface ConnectionState {
   elinkConnected: boolean;
   elinkReady: boolean;
   halowFresh: boolean;
+  /** True while E-Link packets keep arriving (within ELINK_STALE_MS). */
+  elinkFresh: boolean;
   elinkPort: string;
 }
 
@@ -98,8 +107,12 @@ export interface CommandResult {
 // ─── Context ──────────────────────────────────────────────────────────────────
 
 interface LiveDataContextValue {
+  /** Whichever link is delivering (E-Link first): the map, antenna and top bar use this. */
   telemetry: TelemetryData;
+  /** Only what arrived over E-Link; stops updating when E-Link goes quiet. */
   elinkTelemetry: TelemetryData;
+  /** Only what arrived over HaLow; stops updating when HaLow goes quiet. */
+  halowTelemetry: TelemetryData;
   connection: ConnectionState;
   logging: boolean;
   groundStation: GroundStationLocation;
@@ -133,6 +146,10 @@ const INITIAL_TELEMETRY: TelemetryData = {
   noiseFloor: null,
   txMcs: null,
   halowStatus: null,
+  gsRssi: null,
+  gsSnr: null,
+  gsNoiseFloor: null,
+  gsFreqDev: null,
   systemState: null,
   systemStateLabel: null,
   halowCurrMa: null,
@@ -148,25 +165,29 @@ const INITIAL_TELEMETRY: TelemetryData = {
   errorFlags: null,
   receivedAt: null,
   rssiHistory: [],
+  gsRssiHistory: [],
   trajectoryHistory: [],
 };
 
 /**
- * The payload reports RSSI, SNR, noise floor and frequency deviation as 0. The backend
- * attaches the ground station's own measurements (gsRssi, gsSnr, ...), so every page
- * gets a real value, or null, instead of a misleading 0.
+ * The payload and the ground station each measure the link on the other's frames. Both
+ * sets travel on every packet; each is cleaned on its own (a 0 is no reading) and kept in
+ * its own fields. Neither is ever used in place of the other.
  */
-function withResolvedRadio(raw: TelemetryData): TelemetryData {
+function withSeparateRadio(raw: TelemetryData): TelemetryData {
   const gs = raw as TelemetryData & {
     gsRssi?: number | null; gsSnr?: number | null; gsNoiseFloor?: number | null; gsFreqDev?: number | null;
   };
-  const radio = resolveRadio({
+  const payload = payloadRadio({
     rssi: raw.rssi, snr: raw.snr, noiseFloor: raw.noiseFloor, freqDevHz: raw.freqDevHz,
+  });
+  const ground = groundRadio({
     gsRssi: gs.gsRssi, gsSnr: gs.gsSnr, gsNoiseFloor: gs.gsNoiseFloor, gsFreqDev: gs.gsFreqDev,
   });
   return {
-    ...raw, rssi: radio.rssi, snr: radio.snr, noiseFloor: radio.noiseFloor, freqDevHz: radio.freqDevHz,
-    radioSource: radio.source,
+    ...raw,
+    rssi: payload.rssi, snr: payload.snr, noiseFloor: payload.noiseFloor, freqDevHz: payload.freqDevHz,
+    gsRssi: ground.rssi, gsSnr: ground.snr, gsNoiseFloor: ground.noiseFloor, gsFreqDev: ground.freqDevHz,
   };
 }
 
@@ -182,16 +203,24 @@ function mergePacket(prev: TelemetryData, d: TelemetryData): TelemetryData {
   const lastPt = prev.trajectoryHistory[prev.trajectoryHistory.length - 1];
   const jump = Boolean(lastPt && hasPosition
     && (Math.abs(lastPt.lat - lat) > 1 || Math.abs(lastPt.lng - lng) > 1));
-  const hasRf = d.rssi !== null && d.snr !== null && d.timestamp !== null;
+  const hasPayloadRf = d.rssi !== null && d.timestamp !== null;
+  const hasGroundRf = d.gsRssi !== null && d.timestamp !== null;
   return {
     ...d,
-    rssiHistory: hasRf
+    rssiHistory: hasPayloadRf
       ? [...(jump ? [] : prev.rssiHistory), {
           time: d.timestamp / 1000,
           rssi: d.rssi,
           snr: d.snr,
         }].slice(-60)
       : prev.rssiHistory,
+    gsRssiHistory: hasGroundRf
+      ? [...(jump ? [] : prev.gsRssiHistory), {
+          time: d.timestamp / 1000,
+          rssi: d.gsRssi,
+          snr: d.gsSnr,
+        }].slice(-60)
+      : prev.gsRssiHistory,
     trajectoryHistory: hasPosition
       ? [...(jump ? [] : prev.trajectoryHistory), {
           lat,
@@ -205,13 +234,17 @@ function mergePacket(prev: TelemetryData, d: TelemetryData): TelemetryData {
 // ─── Provider ─────────────────────────────────────────────────────────────────
 
 // Longer than the slowest downlink period (HaLow, ~10 s) so the mode does not flap.
-const LIVE_TIMEOUT_MS = 30_000;
+// Each link has its own rhythm (E-Link ~5 s, HaLow ~10 s): a source is "quiet" after
+// a little over two of its periods, so a page never shows old numbers as live.
+const ELINK_STALE_MS = 12_000;
+const HALOW_STALE_MS = 25_000;
 
 const MAX_ROUTE_POINTS = 20_000;
 
 export function LiveDataProvider({ children }: { children: React.ReactNode }) {
   const [telemetry, setTelemetry] = useState<TelemetryData>(INITIAL_TELEMETRY);
   const [elinkTelemetry, setElinkTelemetry] = useState<TelemetryData>(INITIAL_TELEMETRY);
+  const [halowTelemetry, setHalowTelemetry] = useState<TelemetryData>(INITIAL_TELEMETRY);
   const [logging, setLogging] = useState(false);
   const [route, setRoute] = useState<RoutePoint[]>([]);
   const [elinkSamples, setElinkSamples] = useState<TelemetrySample[]>([]);
@@ -227,6 +260,7 @@ export function LiveDataProvider({ children }: { children: React.ReactNode }) {
     elinkConnected: false,
     elinkReady: false,
     halowFresh: false,
+    elinkFresh: false,
     elinkPort: "—",
   });
 
@@ -253,6 +287,17 @@ export function LiveDataProvider({ children }: { children: React.ReactNode }) {
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
   }, []);
+
+  // The backend logs where the ground station is and measures the distance to the payload
+  // from it, so it is told on every connection and whenever the operator changes it.
+  useEffect(() => {
+    if (!connection.wsConnected) return;
+    void fetch(`${HTTP_URL}/gs/position`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...groundStation, source: isGroundStationConfigured() ? "operator" : "default" }),
+    }).catch(() => {});
+  }, [groundStation, connection.wsConnected]);
 
   const connectWs = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
@@ -305,7 +350,8 @@ export function LiveDataProvider({ children }: { children: React.ReactNode }) {
           setConnection((c) => ({
             ...c,
             elinkConnected: msg.elinkFresh as boolean,
-            halowFresh: msg.halowFresh as boolean,
+            // halowFresh is judged here against HaLow's own period (the backend's 5 s
+            // window is shorter than the 10 s between HaLow packets)
           }));
         }
 
@@ -330,7 +376,7 @@ export function LiveDataProvider({ children }: { children: React.ReactNode }) {
           const sample = sampleFromPacket(msg.data, now);
           if (sample) setElinkSamples((prev) => [...prev, sample].slice(-MAX_SERIES_POINTS));
           const next = mergePacket(latestElinkRef.current ?? INITIAL_TELEMETRY,
-                                   withResolvedRadio(msg.data as TelemetryData));
+                                   withSeparateRadio(msg.data as TelemetryData));
           latestElinkRef.current = next;
           lastElinkActivityRef.current = now;
           lastElinkRxRef.current = now;
@@ -346,9 +392,10 @@ export function LiveDataProvider({ children }: { children: React.ReactNode }) {
         if (msg.type === "telemetry" && msg.data) {
           const now = Date.now();
           const next = mergePacket(latestHalowRef.current ?? INITIAL_TELEMETRY,
-                                   withResolvedRadio(msg.data as TelemetryData));
+                                   withSeparateRadio(msg.data as TelemetryData));
           latestHalowRef.current = next;
           lastHalowRxRef.current = now;
+          setHalowTelemetry(next);
           const elinkFresh = (now - lastElinkRxRef.current) <= LINK_FRESHNESS_MS;
           if (!elinkFresh) {
             setTelemetry(next);
@@ -395,7 +442,9 @@ export function LiveDataProvider({ children }: { children: React.ReactNode }) {
       const elinkActivityFresh = (now - lastElinkActivityRef.current)
         <= LINK_FRESHNESS_MS;
       const halowFresh = latestHalowRef.current !== null
-        && (now - lastHalowRxRef.current) <= LINK_FRESHNESS_MS;
+        && (now - lastHalowRxRef.current) <= HALOW_STALE_MS;
+      const elinkFresh = latestElinkRef.current !== null
+        && (now - lastElinkRxRef.current) <= ELINK_STALE_MS;
 
       if (elinkTelemetryFresh && latestElinkRef.current) {
         setTelemetry(latestElinkRef.current);
@@ -407,10 +456,17 @@ export function LiveDataProvider({ children }: { children: React.ReactNode }) {
           : { ...prev, halowStatus: "INTERRUPTED" });
       }
 
-      const elinkAlive = lastElinkRxRef.current > 0
-        && (now - lastElinkRxRef.current) <= LIVE_TIMEOUT_MS;
-      const halowAlive = lastHalowRxRef.current > 0
-        && (now - lastHalowRxRef.current) <= LIVE_TIMEOUT_MS;
+      // A page that listens to one link goes INTERRUPTED when that link is quiet,
+      // keeping the last values on screen (they are not refreshed by the other link).
+      const interrupt = (prev: TelemetryData): TelemetryData =>
+        prev.receivedAt === null || prev.halowStatus === "INTERRUPTED"
+          ? prev
+          : { ...prev, halowStatus: "INTERRUPTED" };
+      if (!elinkFresh) setElinkTelemetry(interrupt);
+      if (!halowFresh) setHalowTelemetry(interrupt);
+
+      const elinkAlive = lastElinkRxRef.current > 0 && elinkFresh;
+      const halowAlive = lastHalowRxRef.current > 0 && halowFresh;
       const mode: LinkMode = elinkAlive && halowAlive ? "halow+elink"
         : elinkAlive ? "elink"
         : halowAlive ? "halow"
@@ -420,6 +476,7 @@ export function LiveDataProvider({ children }: { children: React.ReactNode }) {
         ...c,
         elinkConnected: elinkActivityFresh,
         halowFresh,
+        elinkFresh,
         activeSource: source,
         mode,
       }));
@@ -497,6 +554,7 @@ export function LiveDataProvider({ children }: { children: React.ReactNode }) {
     <LiveDataContext.Provider value={{
       telemetry,
       elinkTelemetry,
+      halowTelemetry,
       connection,
       logging,
       groundStation,

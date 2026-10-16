@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { HTTP_URL } from "@/lib/backendUrl";
+import StationEquipmentCard from "@/components/StationEquipmentCard";
 import {
   ackTimeoutFor,
   BANDWIDTH_OPTIONS,
@@ -249,6 +250,8 @@ export default function GroundRadioPage() {
           <span className="font-mono text-xs text-muted-foreground">km link</span>
         </Row>
       </div>
+
+      <StationEquipmentCard />
 
       {/* Any command, for anything not covered above */}
       <details className="rounded-lg border border-border bg-card p-5">

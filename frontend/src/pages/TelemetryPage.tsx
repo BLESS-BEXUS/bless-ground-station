@@ -1,10 +1,7 @@
 import { useLiveData } from "@/hooks/useLiveData";
 import { decodeTelemetryErrors } from "@/lib/telemetryErrors";
 import { fmt } from "@/lib/format";
-import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, Legend,
-} from "recharts";
+import { RadioStatGroups, RfLinkCharts } from "@/components/RadioQuality";
 
 function StatusDot({ status }: { status: "nominal" | "warning" | "critical" | "idle" }) {
   const cls =
@@ -49,7 +46,7 @@ function TelemetryCard({ label, value, unit, decimals = 2 }: {
 
 
 export default function TelemetryPage() {
-  const { telemetry: sim } = useLiveData();
+  const { halowTelemetry: sim, connection } = useLiveData();
 
   const halowColor =
     sim.halowStatus === "ACTIVE" ? "text-success"
@@ -72,6 +69,15 @@ export default function TelemetryPage() {
   return (
     <div className="p-6 space-y-6 max-w-7xl mx-auto">
 
+      {/* This tab only listens to HaLow: when it goes quiet nothing here refreshes */}
+      {!connection.halowFresh && (
+        <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 font-mono text-xs text-destructive">
+          {sim.receivedAt === null
+            ? "No HaLow packets received yet."
+            : `No HaLow packets for a while — showing the last values, received at ${new Date(sim.receivedAt).toLocaleTimeString([], { hour12: false })}.`}
+        </div>
+      )}
+
       {/* HaLow Status Banner */}
       <div className={`rounded-lg border ${halowBorder} bg-card p-4 flex items-center justify-between flex-wrap gap-4`}>
         <div className="flex items-center gap-3">
@@ -80,13 +86,14 @@ export default function TelemetryPage() {
           <span className={`font-mono text-lg font-bold ${halowColor}`}>{sim.halowStatus ?? "NO DATA"}</span>
         </div>
         <div className="flex gap-6 flex-wrap">
-          <Stat label="RSSI" value={fmt(sim.rssi, 1, "dBm")} />
-          <Stat label="SNR" value={fmt(sim.snr, 1, "dB")} />
           <Stat label="PDR" value={fmt(sim.successRate, 0, "%")} />
-          <Stat label="Noise Floor" value={fmt(sim.noiseFloor, 1, "dBm")} />
           <Stat label="MCS" value={fmt(sim.txMcs, 0)} />
-          <Stat label="Freq Dev" value={fmt(sim.freqDevHz, 0, "Hz")} />
         </div>
+        <RadioStatGroups d={sim} />
+        <p className="basis-full font-mono text-[11px] text-muted-foreground/70">
+          Two different measurements, each end on the other's frames: they differ by design and are never merged.
+          A blank is a missing reading, not a zero.
+        </p>
       </div>
 
       {/* Telemetry Grid */}
@@ -132,22 +139,8 @@ export default function TelemetryPage() {
         )}
       </div>
 
-      {/* RSSI + SNR chart */}
-      <div className="rounded-lg border border-border bg-card p-4">
-        <h3 className="font-mono text-sm text-muted-foreground mb-4 uppercase tracking-wider">RF Link Quality</h3>
-        <ResponsiveContainer width="100%" height={220}>
-          <LineChart data={sim.rssiHistory}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#28808D33" />
-            <XAxis dataKey="time" tick={{ fill: "#E1DFB4aa", fontSize: 11, fontFamily: "JetBrains Mono" }} tickFormatter={(v) => `${v}s`} />
-            <YAxis yAxisId="rssi" domain={[-110, -30]} tick={{ fill: "#E1DFB4aa", fontSize: 11, fontFamily: "JetBrains Mono" }} />
-            <YAxis yAxisId="snr" orientation="right" domain={[0, 40]} tick={{ fill: "#E1DFB4aa", fontSize: 11, fontFamily: "JetBrains Mono" }} />
-            <Tooltip contentStyle={{ background: "#183054", border: "1px solid #28808D", fontFamily: "JetBrains Mono", fontSize: 12, color: "#E1DFB4" }} labelFormatter={(v) => `T+${v}s`} />
-            <Legend wrapperStyle={{ fontFamily: "JetBrains Mono", fontSize: 11, color: "#E1DFB4aa" }} />
-            <Line yAxisId="rssi" type="monotone" dataKey="rssi" stroke="#28808D" strokeWidth={2} dot={false} name="RSSI (dBm)" />
-            <Line yAxisId="snr" type="monotone" dataKey="snr" stroke="#A5BB86" strokeWidth={2} dot={false} name="SNR (dB)" />
-          </LineChart>
-        </ResponsiveContainer>
-      </div>
+      {/* RF charts: one per provider */}
+      <RfLinkCharts d={sim} link="HaLow" />
 
     </div>
   );

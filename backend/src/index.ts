@@ -18,6 +18,11 @@ import { GsRfLogger, MissionEventLogger, MissionLogger } from "./logger";
 import { LmacStatusParser } from "./gsLmac";
 import type { GsRfSnapshot } from "./gsLmac";
 import { GsRadioLive } from "./gsRadio";
+import { GsPositionState, describePosition, parseGsPosition } from "./gsPosition";
+import { EquipmentStore, parseEquipment } from "./stationEquipment";
+import { writeMissionRoute } from "./missionRoute";
+import { buildMissionConfig, writeMissionConfig } from "./missionConfig";
+import type { EquipmentChange, PayloadCommandRecord, PositionChange } from "./missionConfig";
 import { RouteTracker } from "./track";
 import type { RouteLink } from "./track";
 import { TileCache, handleTileRequest } from "./tiles";
@@ -52,7 +57,7 @@ const halowLogger = new MissionLogger(
   "rssi,snr,freqDevHz,successRate,noiseFloor,txMcs," +
   "systemState,halowCurrMa,chipTempC,heaterPower," +
   "pressurePa,extTempC,intTempC,extHumidityRh,radiationCps,errorFlags,halowStatus," +
-  "gsRssi,gsSnr,gsFreqDev,gsMcs,gsNoiseFloor,gsPer\n",
+  "gsRssi,gsSnr,gsFreqDev,gsMcs,gsNoiseFloor,gsPer,gsDistHorizontalM,gsDistSlantM\n",
   true
 );
 const elinkLogger = new MissionLogger(
@@ -61,7 +66,7 @@ const elinkLogger = new MissionLogger(
   "rssi,snr,freqDevHz,successRate,noiseFloor,txMcs," +
   "systemState,halowCurrMa,chipTempC,heaterPower," +
   "pressurePa,extTempC,intTempC,extHumidityRh,radiationCps,errorFlags,halowStatus," +
-  "gsRssi,gsSnr,gsFreqDev,gsMcs,gsNoiseFloor,gsPer\n",
+  "gsRssi,gsSnr,gsFreqDev,gsMcs,gsNoiseFloor,gsPer,gsDistHorizontalM,gsDistSlantM\n",
   true
 );
 const gsRfLogger = new GsRfLogger("./logs", "gs_rf_live.csv");
@@ -81,18 +86,182 @@ const tileCache = new TileCache(path.resolve(process.env.TILE_CACHE_DIR ?? "./ti
 function recordRoute(packet: BlessPacket, via: RouteLink): void {
   // The payload reports RSSI 0 now; the ground station's own reading colors the map
   const point = routeTracker.record(packet, via, Date.now(), packet.gsRssi ?? null);
-  if (point) broadcast({ type: "route_point", point });
+  if (point) {
+    broadcast({ type: "route_point", point });
+    appendMissionRoutePoint(point);
+  }
 }
+
+/**
+ * The route of the mission being recorded, one JSON point per line, in its own folder
+ * (the same line format as the live map's journal, `logs/route.ndjson`, which keeps
+ * serving the map across restarts). Appended point by point, so a crash loses nothing.
+ */
+function appendMissionRoutePoint(point: object): void {
+  if (!mission || mission.endedAt) return;
+  try {
+    fs.appendFileSync(path.join(mission.dir, `route_${mission.session}.ndjson`), JSON.stringify(point) + "\n", "utf-8");
+    mission.routeLines++;
+  } catch (error) {
+    console.warn(`[mission] Could not append to the mission route journal: ${String(error)}`);
+  }
+}
+
+/**
+ * Every REC creates one folder, `logs/mission_<session>/`, holding that run's HaLow,
+ * E-Link, radio-dump and event CSVs plus `mission_config_<session>.json` (where the
+ * ground station was, how its radio was set, the antennas, the commands sent).
+ */
+interface MissionRun {
+  session: string;
+  folder: string;
+  dir: string;
+  startedAt: string;
+  endedAt: string | null;
+  positionChanges: PositionChange[];
+  equipmentChanges: EquipmentChange[];
+  /** The route file written into the folder, once there are points to save. */
+  routeFile: string | null;
+  routePoints: number;
+  /** Points appended to the mission's own route journal (route_<session>.ndjson). */
+  routeLines: number;
+}
+let mission: MissionRun | null = null;
+// While recording, the mission's route is rewritten this often, so a crash keeps nearly all of it
+const ROUTE_SAVE_INTERVAL_MS = Number(process.env.ROUTE_SAVE_INTERVAL_MS ?? 30_000);
+const MISSION_ROOT = path.resolve("./logs");
 
 function startLogging(): void {
   if (!halowLogger.isActive()) {
     const sessionId = new Date().toISOString().replace(/[:.]/g, "-");
-    halowLogger.start(sessionId);
-    elinkLogger.start(sessionId);
-    gsRfLogger.start(sessionId);
-    missionEventLogger.start(sessionId);
+    const folder = `mission_${sessionId}`;
+    const dir = path.join(MISSION_ROOT, folder);
+    fs.mkdirSync(dir, { recursive: true });
+    halowLogger.start(sessionId, dir);
+    elinkLogger.start(sessionId, dir);
+    gsRfLogger.start(sessionId, dir);
+    missionEventLogger.start(sessionId, dir);
+    mission = {
+      session: sessionId, folder, dir, startedAt: new Date().toISOString(), endedAt: null,
+      positionChanges: [], equipmentChanges: [], routeFile: null, routePoints: 0, routeLines: 0,
+    };
+    // Every session says where the ground station was, so its distances can be read alone
+    logGsPosition();
+    saveMissionConfig();
   }
-  broadcast({ type: "logging", active: true });
+  broadcast({ type: "logging", active: true, folder: mission?.folder ?? null });
+}
+
+/** Closes the run: the files stay as they are and the configuration gets its end time. */
+function endMission(reason = "rec-stop"): void {
+  missionEventLogger.stop();
+  if (mission && !mission.endedAt) {
+    saveMissionRoute(reason);
+    mission.endedAt = new Date().toISOString();
+    saveMissionConfig();
+  }
+}
+
+/** Writes the route recorded since this mission began into its folder, as GeoJSON. */
+function saveMissionRoute(reason: string): void {
+  if (!mission) return;
+  const since = Date.parse(mission.startedAt);
+  const points = routeTracker.list().filter((p) => p.t >= since);
+  if (reason === "recording" && points.length === mission.routePoints) return;   // nothing new
+  try {
+    const name = writeMissionRoute(mission.dir, points, { session: mission.session, reason });
+    if (name) {
+      const first = mission.routeFile === null;
+      mission.routeFile = name;
+      mission.routePoints = points.length;
+      if (first && reason === "recording") saveMissionConfig();   // the file list gains the route
+    }
+  } catch (error) {
+    console.warn(`[mission] Could not write the mission route: ${String(error)}`);
+  }
+}
+
+// Where the ground station is, as the page reports it (see gsPosition.ts)
+const gsPosition = new GsPositionState();
+
+// Antennas, LNA and cable loss, which only the operator knows (see stationEquipment.ts)
+const equipmentStore = new EquipmentStore(path.resolve(process.env.STATION_EQUIPMENT_FILE ?? "./station_equipment.json"));
+
+// Commands sent to the payload during this run, newest last
+const payloadCommands: PayloadCommandRecord[] = [];
+const PAYLOAD_COMMAND_LIMIT = 200;
+const UNLOGGED_PAYLOAD_COMMANDS = new Set(["PING", "SYNC_TIME"]); // SYNC_TIME has its own event
+
+function recordPayloadCommand(command: string, params: number[]): void {
+  if (UNLOGGED_PAYLOAD_COMMANDS.has(command)) return;
+  const at = new Date().toISOString();
+  payloadCommands.push({ at, command, params });
+  if (payloadCommands.length > PAYLOAD_COMMAND_LIMIT) payloadCommands.shift();
+  missionEventLogger.writePayloadCommand({ command, params, sentUtc: at });
+  if (mission && !mission.endedAt) saveMissionConfig();
+}
+
+function currentMissionConfig() {
+  if (!mission) return null;
+  const lmac = gsRfHistory[gsRfHistory.length - 1] ?? null;
+  const fileName = (p: string) => path.basename(p);
+  return buildMissionConfig({
+    session: mission.session,
+    folder: mission.folder,
+    startedAt: mission.startedAt,
+    endedAt: mission.endedAt,
+    position: gsPosition.get(),
+    positionSince: gsPosition.getSince(),
+    positionChanges: mission.positionChanges,
+    equipment: equipmentStore.get(),
+    equipmentChanges: mission.equipmentChanges,
+    groundRadio: {
+      port: halowPort,
+      connected: halowConnected,
+      applied: groundAtApplied,
+      lmac: lmac
+        ? { freqMHz: lmac.freqMHz, bwMHz: lmac.bwMHz, txMcs: lmac.txMcs, txPowerIndex: lmac.txPowerIndex }
+        : null,
+    },
+    payloadCommands,
+    rows: {
+      halow: halowLogger.getRowCount(),
+      elink: elinkLogger.getRowCount(),
+      gsRf: gsRfLogger.getRowCount(),
+      events: missionEventLogger.getRowCount(),
+      route: mission.routeLines,
+    },
+    files: [
+      fileName(halowLogger.getFilePath()),
+      fileName(elinkLogger.getFilePath()),
+      fileName(gsRfLogger.getFilePath()),
+      fileName(missionEventLogger.getFilePath()),
+      ...(mission.routeLines > 0 ? [`route_${mission.session}.ndjson`] : []),
+      ...(mission.routeFile ? [mission.routeFile] : []),
+      `mission_config_${mission.session}.json`,
+    ],
+  });
+}
+
+function saveMissionConfig(): void {
+  if (!mission) return;
+  const config = currentMissionConfig();
+  if (!config) return;
+  try {
+    writeMissionConfig(mission.dir, mission.session, config);
+  } catch (error) {
+    console.warn(`[mission] Could not write the mission configuration: ${String(error)}`);
+  }
+}
+
+function logGsPosition(): void {
+  const position = gsPosition.get();
+  if (!position) return;
+  missionEventLogger.writeGroundStationPosition({
+    position: describePosition(position),
+    source: position.source,
+    atUtc: gsPosition.getSince() ?? new Date().toISOString(),
+  });
 }
 
 // Logging starts with the first packet from either link. It happens once per
@@ -169,6 +338,7 @@ async function runGroundAtCommand(name: GroundAtCommand, value: string): Promise
     sentUtc: result.sentAt,
     finishedUtc: result.finishedAt,
   });
+  if (mission && !mission.endedAt) saveMissionConfig();
   console.log(`[halow-at] AT+${name}=${result.value} -> ${result.ok ? "OK" : `FAILED (${result.error})`}`);
   return result;
 }
@@ -202,6 +372,7 @@ function processHalowData(): void {
           lastHalowPacketAt = Date.now();
           halowRxCount++;
           gsRadio.attach(packet);
+          gsPosition.attach(packet);
           autoStartLogging();
           halowLogger.write(packet);
           recordRoute(packet, "halow");
@@ -520,6 +691,7 @@ function handleElinkTelemetry(frame: Buffer): boolean {
   elinkRxCount++;
   lastElinkActivityAt = Date.now();
   gsRadio.attach(packet);
+  gsPosition.attach(packet);
   remember(elinkHistory, packet);
   autoStartLogging();
   elinkLogger.write(packet);
@@ -727,6 +899,41 @@ function parseCommandParams(body: string): number[] {
   return params as number[];
 }
 
+/** Log files a page can fetch: the CSVs at the top of `logs/` and those inside the mission folders. */
+function listLogFiles(): string[] {
+  if (!fs.existsSync(MISSION_ROOT)) return [];
+  const out: string[] = [];
+  for (const entry of fs.readdirSync(MISSION_ROOT, { withFileTypes: true })) {
+    if (entry.isFile() && entry.name.endsWith(".csv")) out.push(entry.name);
+    if (entry.isDirectory() && /^mission_[\w.-]+$/.test(entry.name)) {
+      for (const inner of fs.readdirSync(path.join(MISSION_ROOT, entry.name))) {
+        if (/\.(csv|json|geojson|ndjson)$/.test(inner)) out.push(`${entry.name}/${inner}`);
+      }
+    }
+  }
+  return out.sort();
+}
+
+/**
+ * `name` or `mission_<session>/name` inside the log directory, nothing else: no `..`,
+ * no other folders, only CSV and JSON files. Returns the full path, or null.
+ */
+function resolveLogFile(requested: string): string | null {
+  const parts = requested.split("/");
+  if (parts.length < 1 || parts.length > 2) return null;
+  if (parts.some((part) => part === "" || part === "." || part === ".." || part.includes("\\") || part.includes("\0"))) return null;
+  if (parts.length === 2 && !/^mission_[\w.-]+$/.test(parts[0])) return null;
+  const last = parts[parts.length - 1];
+  if (!last.endsWith(".csv") && !(parts.length === 2 && /\.(json|geojson|ndjson)$/.test(last))) return null;
+  const full = path.resolve(MISSION_ROOT, ...parts);
+  if (!full.startsWith(MISSION_ROOT + path.sep)) return null;
+  try {
+    return fs.statSync(full).isFile() ? full : null;
+  } catch {
+    return null;
+  }
+}
+
 const httpServer = http.createServer((req, res) => {
   const cors = { "Access-Control-Allow-Origin": "*", "Content-Type": "application/json" };
 
@@ -790,6 +997,93 @@ const httpServer = http.createServer((req, res) => {
     return;
   }
 
+  // Where the ground station is: the page reports it on connect and when the operator changes it
+  if (req.method === "GET" && req.url === "/gs/position") {
+    res.writeHead(200, cors);
+    res.end(JSON.stringify({ position: gsPosition.get(), since: gsPosition.getSince() }));
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/gs/position") {
+    readBody(req, res, (body) => {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(body || "{}");
+      } catch {
+        res.writeHead(400, cors); res.end(JSON.stringify({ ok: false, error: "Request body must be valid JSON" })); return;
+      }
+      const checked = parseGsPosition(parsed);
+      if (!checked.ok) {
+        res.writeHead(400, cors); res.end(JSON.stringify({ ok: false, error: checked.error })); return;
+      }
+      const changed = gsPosition.set(checked.value);
+      if (changed) {
+        // Between sessions it is only kept: the next session writes it as its first event
+        if (halowLogger.isActive()) {
+          logGsPosition();
+          if (mission && !mission.endedAt) {
+            mission.positionChanges.push({ at: gsPosition.getSince() ?? new Date().toISOString(), position: checked.value });
+            saveMissionConfig();
+          }
+        }
+        console.log(`[gs-position] ${describePosition(checked.value)} (${checked.value.source})`);
+        broadcast({ type: "gs_position", position: checked.value });
+      }
+      res.writeHead(200, cors);
+      res.end(JSON.stringify({ ok: true, changed, position: checked.value }));
+    });
+    return;
+  }
+
+  // Antennas, LNA and cable loss: entered by the operator, copied into every mission's configuration
+  if (req.method === "GET" && req.url === "/gs/equipment") {
+    res.writeHead(200, cors);
+    res.end(JSON.stringify({ equipment: equipmentStore.get() }));
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/gs/equipment") {
+    readBody(req, res, (body) => {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(body || "{}");
+      } catch {
+        res.writeHead(400, cors); res.end(JSON.stringify({ ok: false, error: "Request body must be valid JSON" })); return;
+      }
+      const checked = parseEquipment(parsed);
+      if (!checked.ok) {
+        res.writeHead(400, cors); res.end(JSON.stringify({ ok: false, error: checked.error })); return;
+      }
+      try {
+        equipmentStore.set(checked.value);
+      } catch (error) {
+        res.writeHead(500, cors);
+        res.end(JSON.stringify({ ok: false, error: `Could not save: ${error instanceof Error ? error.message : String(error)}` }));
+        return;
+      }
+      if (mission && !mission.endedAt) {
+        mission.equipmentChanges.push({ at: checked.value.updatedAt ?? new Date().toISOString(), equipment: checked.value });
+        saveMissionConfig();
+      }
+      console.log("[equipment] Saved");
+      broadcast({ type: "gs_equipment", equipment: checked.value });
+      res.writeHead(200, cors);
+      res.end(JSON.stringify({ ok: true, equipment: checked.value }));
+    });
+    return;
+  }
+
+  // The current (or last) mission's folder and configuration
+  if (req.method === "GET" && req.url === "/mission") {
+    res.writeHead(200, cors);
+    res.end(JSON.stringify({
+      recording: halowLogger.isActive(),
+      folder: mission?.folder ?? null,
+      config: currentMissionConfig(),
+    }));
+    return;
+  }
+
   if (req.method === "GET" && req.url === "/route") {
     res.writeHead(200, cors);
     res.end(JSON.stringify(routeTracker.list()));
@@ -835,6 +1129,7 @@ const httpServer = http.createServer((req, res) => {
         const payload = Buffer.from(params);
         const frame = buildCommand(CMD[cmdName] as CmdId, payload);
         await sendElinkFrame(frame);
+        recordPayloadCommand(cmdName, params);
         console.log(`[cmd] Sent ${cmdName} to ${elinkEndpoint()}`);
         res.writeHead(200, cors);
         res.end(JSON.stringify({ ok: true, cmd: cmdName }));
@@ -890,6 +1185,10 @@ const httpServer = http.createServer((req, res) => {
         missionEventFile: missionEventLogger.getFilePath(),
         missionEventRows: missionEventLogger.getRowCount(),
       },
+      groundStation: gsPosition.get(),
+      mission: mission
+        ? { session: mission.session, folder: mission.folder, startedAt: mission.startedAt, endedAt: mission.endedAt }
+        : null,
     })); return;
   }
 
@@ -906,6 +1205,7 @@ const httpServer = http.createServer((req, res) => {
     halowLogger.stop();
     elinkLogger.stop();
     gsRfLogger.stop();
+    endMission();
     broadcast({ type: "logging", active: false, halowRows: halowLogger.getRowCount(), elinkRows: elinkLogger.getRowCount() });
     res.writeHead(200, cors);
     res.end(JSON.stringify({ ok: true, active: false }));
@@ -921,31 +1221,29 @@ const httpServer = http.createServer((req, res) => {
   }
 
   if (req.method === "GET" && req.url === "/logs") {
-    const logDir = path.resolve("./logs");
-    const files = fs.existsSync(logDir)
-      ? fs.readdirSync(logDir).filter((name) => name.endsWith(".csv"))
-      : [];
     res.writeHead(200, cors);
-    res.end(JSON.stringify(files));
+    res.end(JSON.stringify(listLogFiles()));
     return;
   }
 
   if (req.method === "GET" && req.url?.startsWith("/logs/")) {
     let requested: string;
     try {
-      requested = path.basename(decodeURIComponent(req.url.slice(6)));
+      requested = decodeURIComponent(req.url.slice(6));
     } catch {
       res.writeHead(400, cors); res.end(JSON.stringify({ error: "Malformed log file name" })); return;
     }
-    const filePath = path.resolve("./logs", requested);
-    const logRoot = path.resolve("./logs") + path.sep;
-    if (!filePath.startsWith(logRoot) || !fs.existsSync(filePath)) {
+    const filePath = resolveLogFile(requested);
+    if (!filePath) {
       res.writeHead(404, cors); res.end(JSON.stringify({ error: "Log not found" })); return;
     }
+    const fileName = path.basename(filePath);
     res.writeHead(200, {
       "Access-Control-Allow-Origin": "*",
-      "Content-Type": "text/csv",
-      "Content-Disposition": `attachment; filename="${requested}"`,
+      "Content-Type": fileName.endsWith(".geojson") ? "application/geo+json"
+        : fileName.endsWith(".ndjson") ? "application/x-ndjson"
+        : fileName.endsWith(".json") ? "application/json" : "text/csv",
+      "Content-Disposition": `attachment; filename="${fileName}"`,
     });
     fs.createReadStream(filePath).pipe(res);
     return;
@@ -1032,8 +1330,13 @@ setInterval(() => {
   });
 }, 1000);
 
+setInterval(() => {
+  if (mission && !mission.endedAt && halowLogger.isActive()) saveMissionRoute("recording");
+}, ROUTE_SAVE_INTERVAL_MS);
+
 process.on("SIGINT", () => {
   console.log("\n[info] Shutting down...");
+  endMission("shutdown");
   halowLogger.close();
   elinkLogger.close();
   halowSerial?.close();

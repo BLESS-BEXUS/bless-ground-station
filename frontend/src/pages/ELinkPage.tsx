@@ -1,10 +1,7 @@
 import { useState } from "react";
 import { useLiveData } from "@/hooks/useLiveData";
-import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, Legend,
-} from "recharts";
 import CommandModal from "@/components/CommandModal";
+import { RadioStatGroups, RfLinkCharts } from "@/components/RadioQuality";
 import { decodeTelemetryErrors } from "@/lib/telemetryErrors";
 import { fmt } from "@/lib/format";
 
@@ -106,6 +103,15 @@ export default function ELinkPage() {
         </button>
       </div>
 
+      {/* This tab only listens to E-Link: when it goes quiet nothing here refreshes */}
+      {!connection.elinkFresh && (
+        <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 font-mono text-xs text-destructive">
+          {d.receivedAt === null
+            ? "No E-Link packets received yet."
+            : `No E-Link packets for a while — showing the last values, received at ${new Date(d.receivedAt).toLocaleTimeString([], { hour12: false })}.`}
+        </div>
+      )}
+
       {/* HaLow link status from E-Link telemetry */}
       <div className={`rounded-lg border ${halowBorder} bg-card p-4 flex items-center justify-between flex-wrap gap-4`}>
         <div className="flex items-center gap-3">
@@ -114,19 +120,13 @@ export default function ELinkPage() {
           <span className={`font-mono text-lg font-bold ${halowColor}`}>{d.halowStatus ?? "NO DATA"}</span>
         </div>
         <div className="flex gap-6 flex-wrap">
-          <Stat label="RSSI" value={fmt(d.rssi, 1, "dBm")} />
-          <Stat label="SNR" value={fmt(d.snr, 1, "dB")} />
           <Stat label="PDR" value={fmt(d.successRate, 0, "%")} />
-          <Stat label="Noise Floor" value={fmt(d.noiseFloor, 1, "dBm")} />
           <Stat label="MCS" value={fmt(d.txMcs, 0)} />
-          <Stat label="Freq Dev" value={fmt(d.freqDevHz, 0, "Hz")} />
         </div>
+        <RadioStatGroups d={d} />
         <p className="basis-full font-mono text-[11px] text-muted-foreground/70">
-          {d.radioSource === "payload"
-            ? "RSSI / SNR as reported by the payload."
-            : d.radioSource === "ground"
-              ? "RSSI / SNR measured by the ground-station module on the payload's frames (the payload reports 0)."
-              : "No RSSI reading: the payload reports 0 and the ground module has no recent figure."}
+          Two different measurements, each end on the other's frames: they differ by design and are never merged.
+          A blank is a missing reading, not a zero.
         </p>
       </div>
 
@@ -174,22 +174,8 @@ export default function ELinkPage() {
         )}
       </div>
 
-      {/* RF chart */}
-      <div className="rounded-lg border border-border bg-card p-4">
-        <h3 className="font-mono text-sm text-muted-foreground mb-4 uppercase tracking-wider">RF Link Quality (E-Link)</h3>
-        <ResponsiveContainer width="100%" height={220}>
-          <LineChart data={d.rssiHistory}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#28808D33" />
-            <XAxis dataKey="time" tick={{ fill: "#E1DFB4aa", fontSize: 11, fontFamily: "JetBrains Mono" }} tickFormatter={(v) => `${v}s`} />
-            <YAxis yAxisId="rssi" domain={[-110, -30]} tick={{ fill: "#E1DFB4aa", fontSize: 11, fontFamily: "JetBrains Mono" }} />
-            <YAxis yAxisId="snr" orientation="right" domain={[0, 40]} tick={{ fill: "#E1DFB4aa", fontSize: 11, fontFamily: "JetBrains Mono" }} />
-            <Tooltip contentStyle={{ background: "#183054", border: "1px solid #28808D", fontFamily: "JetBrains Mono", fontSize: 12, color: "#E1DFB4" }} labelFormatter={(v) => `T+${v}s`} />
-            <Legend wrapperStyle={{ fontFamily: "JetBrains Mono", fontSize: 11, color: "#E1DFB4aa" }} />
-            <Line yAxisId="rssi" type="monotone" dataKey="rssi" stroke="#28808D" strokeWidth={2} dot={false} name="RSSI (dBm)" />
-            <Line yAxisId="snr" type="monotone" dataKey="snr" stroke="#A5BB86" strokeWidth={2} dot={false} name="SNR (dB)" />
-          </LineChart>
-        </ResponsiveContainer>
-      </div>
+      {/* RF charts: one per provider */}
+      <RfLinkCharts d={d} link="E-Link" />
 
       <CommandModal open={cmdOpen} onClose={() => setCmdOpen(false)} />
     </div>

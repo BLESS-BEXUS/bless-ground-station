@@ -213,13 +213,78 @@ cache on another ground-station computer, copy the `tiles/` folder.
 ## Logs
 
 Logging starts automatically with the first packet received from either link (the
-UI shows REC), and a manual stop is respected until you start it again. Each run creates two independent,
-session-stamped files in `./logs`: `halow_live_<session>.csv` and
-`elink_live_<session>.csv`. Confirmed mission-time synchronizations are written to
-`mission_events_<session>.csv`, including the approximate UTC anchor for payload
-`T+0`, the command-send UTC and the confirmation UTC. Rows are appended immediately so a process crash does
-not lose an in-memory batch.
+UI shows REC), and a manual stop is respected until you start it again. Every REC
+creates one folder, `./logs/mission_<session>/`, and everything the run produces goes in it:
 
-`GET /logs` lists the available CSV files and `GET /logs/<filename>` downloads a
-specific file. `POST /logging/start` starts a new paired session and
-`POST /logging/stop` pauses logging.
+```
+logs/mission_2026-10-15T08-47-58-929Z/
+  halow_live_<session>.csv        one row per HaLow packet
+  elink_live_<session>.csv        one row per E-Link packet
+  gs_rf_live_<session>.csv        the ground module's radio dumps
+  mission_events_<session>.csv    time syncs, ground-radio changes, payload commands, GS position
+  route_<session>.ndjson          the mission's route, one point per line, appended live
+  route_<session>.geojson         the same route for QGIS (rewritten while recording)
+  mission_config_<session>.json   how the run was set up (see below)
+```
+
+Confirmed mission-time synchronizations are written to `mission_events_<session>.csv`,
+including the approximate UTC anchor for payload `T+0`, the command-send UTC and the
+confirmation UTC. Commands sent to the payload (`SET_TX_POWER`, `SET_MCS_MODE`, ...)
+are written as `PAYLOAD_COMMAND` rows with their parameters. Rows are appended
+immediately so a process crash does not lose an in-memory batch.
+
+Nothing is queued while no mission is recording: an AT command sent to the ground
+module before the first packet, or between two missions, is not written as an event.
+It is not lost either: the next mission's `mission_config` lists every setting applied
+so far (`appliedFromSoftware`) with the time it was applied. A finished mission's
+folder is never written to again.
+
+`GET /logs` lists the files of every mission (`mission_<session>/<file>`), and
+`GET /logs/mission_<session>/<file>` downloads one (CSV, or the JSON configuration).
+`POST /logging/start` starts a new mission and `POST /logging/stop` closes it (the
+configuration gets its end time). `GET /mission` returns the folder and configuration
+of the current or last mission.
+
+Each mission has its own route. `route_<session>.ndjson` gets one JSON point per line
+(`lat`, `lng`, `alt`, `t`, `link`, `pkt`, `rssi`, the same format as the live map's
+journal) the moment the point is recorded, so a crash loses nothing, and it only holds
+that mission's points. `route_<session>.geojson` is the same route as a FeatureCollection
+for QGIS: `route` lines (blue = HaLow GNSS, yellow = E-Link only), one `rssi-leg` line per
+segment colored by signal strength, and one Point per recorded packet. It is rewritten every
+30 s while recording (`ROUTE_SAVE_INTERVAL_MS`) and at REC stop or shutdown. The live map's
+own journal (`logs/route.ndjson`) stays at the top of `./logs`: it is what restores the map
+after a restart, and it is not tied to a mission.
+
+### Mission configuration (`mission_config_<session>.json`)
+
+Written when the mission starts and rewritten whenever something in it changes:
+
+| Section | What it says |
+|---|---|
+| `mission` | session, folder, start and end time, files, row counts |
+| `groundStation.position` | where the GS was (coordinates entered on the Antenna tab) and when it was reported; `positionChanges` lists the changes during the run |
+| `groundStation.radio` | the ground module's port, every AT setting applied from the software (`appliedFromSoftware`), the TX power (`txPower`: applied value, or "not set this run" with the mission default), and what the module reported about itself |
+| `groundStation.equipment` | antenna gain and polarization, LNA, cable loss, as the operator entered them on the GS Config tab (`confirmedByOperator` is false until they save it) |
+| `payload` | the TX power set by the last `SET_TX_POWER` sent from the software (null if none) and every command sent, flagged when it was sent before the mission began |
+
+The equipment is kept in `station_equipment.json` next to the backend (override with
+`STATION_EQUIPMENT_FILE`), so it survives restarts; `GET/POST /gs/equipment` read and
+save it. Only the ground side is kept: the payload's own equipment and configuration are
+in the SED, and the software never assumes them.
+
+### Ground-station position and distance to the payload
+
+The ground station's coordinates are entered on the Antenna tab and kept by the page,
+which reports them to the backend when it connects and whenever they change
+(`POST /gs/position` with `{ "lat", "lng", "alt", "name", "source" }`; `GET /gs/position`
+returns the current one). With that the backend:
+
+- writes a `GROUND_STATION_POSITION` row to `mission_events_<session>.csv`, as the
+  first event of every session and again each time the position changes. The `status`
+  column is `OPERATOR` (coordinates the operator entered) or `DEFAULT` (the campaign
+  default the page falls back to), and `source` holds `lat=..;lng=..;alt=..;name=..`.
+- adds `gsDistHorizontalM` and `gsDistSlantM` (metres, ground distance and straight
+  line from the ground station to the payload, computed as on the Map tab) to every
+  row of `halow_live_<session>.csv` and `elink_live_<session>.csv`. They are empty
+  while the position is `DEFAULT` and for packets without a GNSS fix. The same two
+  figures travel with the telemetry the pages receive.

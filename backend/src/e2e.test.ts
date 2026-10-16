@@ -249,6 +249,22 @@ function sendUdp(port: number, data: Buffer): Promise<void> {
   });
 }
 
+/** Log files whose name starts with `prefix`: at the top of logs/ and inside the mission folders. */
+function logFiles(workDir: string, prefix: string): string[] {
+  const root = path.join(workDir, "logs");
+  if (!fs.existsSync(root)) return [];
+  const out: string[] = [];
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    if (entry.isFile() && entry.name.startsWith(prefix)) out.push(path.join(root, entry.name));
+    if (entry.isDirectory() && entry.name.startsWith("mission_")) {
+      for (const inner of fs.readdirSync(path.join(root, entry.name))) {
+        if (inner.startsWith(prefix)) out.push(path.join(root, entry.name, inner));
+      }
+    }
+  }
+  return out.sort();
+}
+
 const setFlag = (dir: string, name: string, content = "") => fs.writeFileSync(path.join(dir, name), content);
 const clearFlag = (dir: string, name: string) => fs.rmSync(path.join(dir, name), { force: true });
 const injectHex = (dir: string, hex: string) => fs.writeFileSync(path.join(dir, `inject-${Date.now()}-${Math.random()}.hex`), hex);
@@ -324,18 +340,9 @@ describe("ground station backend — normal operation", () => {
     assert.equal(result.ok, true);
     const everything = JSON.stringify([result, (await get("/halow/config")).json()]);
     assert.equal(everything.includes("supersecretpassword1"), false);
-    const logs = fs.readdirSync(path.join(backend.workDir, "logs")).filter((f) => f.startsWith("mission_events"));
-    for (const file of logs) {
-      assert.equal(fs.readFileSync(path.join(backend.workDir, "logs", file), "utf-8").includes("supersecretpassword1"), false);
+    for (const file of logFiles(backend.workDir, "")) {
+      assert.equal(fs.readFileSync(file, "utf-8").includes("supersecretpassword1"), false);
     }
-  });
-
-  it("records every ground radio change in the mission events file", async () => {
-    const files = fs.readdirSync(path.join(backend.workDir, "logs")).filter((f) => f.startsWith("mission_events"));
-    const content = files.map((f) => fs.readFileSync(path.join(backend.workDir, "logs", f), "utf-8")).join("\n");
-    assert.match(content, /GROUND_HALOW_CONFIG,,OK,.*TXPOWER=12/);
-    assert.match(content, /GROUND_HALOW_CONFIG,,FAILED,.*TXPOWER=19/);
-    assert.match(content, /GROUND_HALOW_CONFIG,,FAILED,.*TX_MCS=5/);
   });
 
   it("receives HaLow telemetry, builds the route and starts logging by itself", async () => {
@@ -356,8 +363,20 @@ describe("ground station backend — normal operation", () => {
     const status = (await get("/status")).json();
     assert.equal(status.logging.active, true, "REC starts with the first packet");
     assert.ok(status.logging.halowRows >= 1);
-    const csv = fs.readdirSync(path.join(backend.workDir, "logs")).filter((f) => f.startsWith("halow_live_"));
+    const csv = logFiles(backend.workDir, "halow_live_");
     assert.ok(csv.length >= 1);
+    assert.match(csv[0], /mission_[^/\\]+[/\\]halow_live_/, "the session's files go in a mission folder");
+
+    // Changes made to the ground module before REC are not queued as events: the mission's
+    // configuration lists what had been applied (with the time) when it started
+    const events = logFiles(backend.workDir, "mission_events_").map((f) => fs.readFileSync(f, "utf-8")).join("\n");
+    assert.equal(/GROUND_HALOW_CONFIG/.test(events), false, "nothing set before REC is replayed into the mission");
+    const configFile = logFiles(backend.workDir, "mission_config_")[0];
+    const config = JSON.parse(fs.readFileSync(configFile, "utf-8"));
+    assert.equal(config.groundStation.radio.appliedFromSoftware.TXPOWER.value, "12");
+    assert.equal(config.groundStation.radio.txPower.dBm, 12);
+    assert.equal(JSON.stringify(config).includes("supersecretpassword1"), false);
+    assert.equal(events.includes("supersecretpassword1"), false);
     clearFlag(backend.controlDir, "frames");
   });
 
@@ -473,11 +492,11 @@ describe("ground station backend — normal operation", () => {
     assert.equal(later.logging.active, false);
     assert.equal(later.logging.halowRows, stoppedRows, "no rows written while stopped");
 
-    const filesBefore = fs.readdirSync(path.join(backend.workDir, "logs")).filter((f) => f.startsWith("halow_live_")).length;
+    const filesBefore = logFiles(backend.workDir, "halow_live_").length;
     await sleep(1100);                                   // timestamped session names need a new second
     await post("/logging/start");
     await until(async () => (await get("/status")).json().logging.halowRows > 0, 3000, "rows in the new session");
-    const filesAfter = fs.readdirSync(path.join(backend.workDir, "logs")).filter((f) => f.startsWith("halow_live_")).length;
+    const filesAfter = logFiles(backend.workDir, "halow_live_").length;
     assert.equal(filesAfter, filesBefore + 1);
     clearFlag(backend.controlDir, "frames");
   });
@@ -555,8 +574,8 @@ describe("ground station backend — normal operation", () => {
     assert.ok(Math.max(...latencies) < 1000, `API stalled for ${Math.max(...latencies)} ms during the stress`);
 
     // everything that was counted was also logged, and nothing was recorded twice
-    const elinkRows = fs.readdirSync(logsDir).filter((f) => f.startsWith("elink_live_"))
-      .map((f) => fs.readFileSync(path.join(logsDir, f), "utf-8").trim().split("\n").length - 1)
+    const elinkRows = logFiles(backend.workDir, "elink_live_")
+      .map((f) => fs.readFileSync(f, "utf-8").trim().split("\n").length - 1)
       .reduce((a, b) => a + b, 0);
     assert.ok(elinkRows >= received, `CSV has ${elinkRows} rows for ${received} packets`);
 
@@ -791,9 +810,8 @@ describe("ground station backend — radio figures from the ground HaLow module"
     await sendUdp(backend.udpPort, telemetryPacket({ count: 2, lat: 67.901, lng: 21.101, alt: 1510, rssi: 0 }));
     await until(async () => (await get("/status")).json().logging.elinkRows >= 2, 3000, "rows logged");
 
-    const logs = path.join(backend.workDir, "logs");
-    const elinkCsv = fs.readdirSync(logs).filter((f) => f.startsWith("elink_live_"));
-    const content = fs.readFileSync(path.join(logs, elinkCsv[0]), "utf-8");
+    const elinkCsv = logFiles(backend.workDir, "elink_live_");
+    const content = fs.readFileSync(elinkCsv[0], "utf-8");
     const [header, firstRow] = content.split("\n");
     assert.match(header, /gsRssi,gsSnr,gsFreqDev,gsMcs,gsNoiseFloor,gsPer/);
     const columns = header.split(",");
@@ -801,9 +819,9 @@ describe("ground station backend — radio figures from the ground HaLow module"
     assert.equal(cells[columns.indexOf("gsRssi")], "-67");
     assert.equal(cells[columns.indexOf("gsNoiseFloor")], "-98");
 
-    const rfCsv = fs.readdirSync(logs).filter((f) => f.startsWith("gs_rf_live_"));
+    const rfCsv = logFiles(backend.workDir, "gs_rf_live_");
     assert.equal(rfCsv.length, 1);
-    const rfFile = path.join(logs, rfCsv[0]);
+    const rfFile = rfCsv[0];
     const rowsInFile = () => fs.readFileSync(rfFile, "utf-8").trim().split(String.fromCharCode(10));
     // a dump arrives every 150 ms, so give the first one after logging started time to come
     await until(() => rowsInFile().length >= 2, 3000, "a radio dump logged while logging is on");
@@ -845,5 +863,333 @@ describe("ground station backend — radio figures from the ground HaLow module"
     const result = (await post("/halow/config", { name: "TXPOWER", value: "12" })).json();
     assert.equal(result.ok, true);
     assert.deepEqual(result.response, ["TXPOWER=12", "OK"]);
+  });
+});
+
+describe("ground station backend — where the ground station is", () => {
+  let root: string;
+  let backend: Backend;
+
+  before(async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "bless-e2e-pos-"));
+    backend = await startBackend(path.join(root, "work"), path.join(root, "control"));
+  });
+
+  after(async () => {
+    await backend?.stop();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const get = (p: string) => request(backend.httpPort, "GET", p);
+  const post = (p: string, body?: string | object) => request(backend.httpPort, "POST", p, body);
+  const newestRows = (prefix: string): { columns: string[]; rows: string[][] } => {
+    const files = logFiles(backend.workDir, prefix);
+    const lines = fs.readFileSync(files[files.length - 1], "utf-8").trim().split("\n");
+    return { columns: lines[0].split(","), rows: lines.slice(1).map((l) => l.split(",")) };
+  };
+  const positionEvents = () =>
+    newestRows("mission_events_").rows.filter((r) => r[0] === "GROUND_STATION_POSITION");
+  const elinkRows = async () => (await get("/status")).json().logging.elinkRows as number;
+  const packetAt = (count: number) =>
+    sendUdp(backend.udpPort, telemetryPacket({ count, lat: 67.8908, lng: 21.0803, alt: 343 }));
+
+  // same sphere the Map tab uses
+  function expected(gs: { lat: number; lng: number; alt: number }, lat: number, lng: number, alt: number) {
+    const rad = (d: number) => (d * Math.PI) / 180;
+    const a = Math.sin(rad(lat - gs.lat) / 2) ** 2
+      + Math.cos(rad(gs.lat)) * Math.cos(rad(lat)) * Math.sin(rad(lng - gs.lng) / 2) ** 2;
+    const horizontal = 6_371_000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return { horizontal, slant: Math.hypot(horizontal, alt - gs.alt) };
+  }
+  const radarHill = { lat: 67.87964, lng: 21.062234, alt: 484, name: "Radar Hill", source: "operator" };
+
+  it("knows no position until the page reports one, and refuses a bad one", async () => {
+    assert.equal((await get("/gs/position")).json().position, null);
+    const bad = await post("/gs/position", { ...radarHill, lat: 200 });
+    assert.equal(bad.status, 400);
+    assert.match(bad.json().error, /lat/);
+    assert.equal((await post("/gs/position", "{nope")).status, 400);
+    assert.equal((await get("/gs/position")).json().position, null);
+  });
+
+  it("writes the position as the first event of the session and the distances on every row", async () => {
+    const reply = (await post("/gs/position", radarHill)).json();
+    assert.equal(reply.ok, true);
+    assert.equal(reply.changed, true);
+    assert.equal((await get("/gs/position")).json().position.name, "Radar Hill");
+
+    await packetAt(1);                                // the first packet starts the session
+    await until(async () => (await elinkRows()) >= 1, 4000, "first row logged");
+
+    const events = positionEvents();
+    assert.equal(events.length, 1);
+    assert.equal(events[0][2], "OPERATOR");
+    assert.equal(events[0][7], "lat=67.8796400;lng=21.0622340;alt=484;name=Radar Hill");
+
+    const { columns, rows } = newestRows("elink_live_");
+    assert.deepEqual(columns.slice(-2), ["gsDistHorizontalM", "gsDistSlantM"]);
+    const want = expected(radarHill, 67.8908, 21.0803, 343);
+    assert.ok(Math.abs(Number(rows[0][columns.indexOf("gsDistHorizontalM")]) - want.horizontal) < 0.1);
+    assert.ok(Math.abs(Number(rows[0][columns.indexOf("gsDistSlantM")]) - want.slant) < 0.1);
+    assert.ok(want.horizontal > 1400 && want.horizontal < 1500, "Radar Hill to the MPF is about 1.45 km");
+  });
+
+  it("logs a changed position as a new event and uses it from the next packet", async () => {
+    const moved = { ...radarHill, alt: 500, name: "Radar Hill, tripod" };
+    assert.equal((await post("/gs/position", moved)).json().changed, true);
+    assert.equal(positionEvents().length, 2);
+    assert.ok(!positionEvents()[1][7].includes("Radar Hill,"), "a comma would break the CSV row");
+
+    await packetAt(2);
+    await until(async () => (await elinkRows()) >= 2, 4000, "second row logged");
+    const { columns, rows } = newestRows("elink_live_");
+    const want = expected(moved, 67.8908, 21.0803, 343);
+    assert.ok(Math.abs(Number(rows[1][columns.indexOf("gsDistSlantM")]) - want.slant) < 0.1);
+  });
+
+  it("does not repeat the event when the page reports the same position again", async () => {
+    const again = (await post("/gs/position", { ...radarHill, alt: 500, name: "Radar Hill, tripod" })).json();
+    assert.equal(again.changed, false);
+    assert.equal(positionEvents().length, 2);
+  });
+
+  it("logs the campaign default as DEFAULT and gives no distances from it", async () => {
+    await post("/gs/position", { lat: 67.8856, lng: 21.0786, alt: 310, name: "Esrange Space Center", source: "default" });
+    assert.equal(positionEvents().at(-1)![2], "DEFAULT");
+
+    await packetAt(3);
+    await until(async () => (await elinkRows()) >= 3, 4000, "third row logged");
+    const { columns, rows } = newestRows("elink_live_");
+    assert.equal(rows[2][columns.indexOf("gsDistHorizontalM")], "");
+    assert.equal(rows[2][columns.indexOf("gsDistSlantM")], "");
+  });
+
+  it("puts the distances on the packets the page receives, once the operator has set the position", async () => {
+    const feed = new Feed(backend.httpPort);
+    await feed.opened();
+    await post("/gs/position", radarHill);
+    await packetAt(4);
+    await until(() => feed.ofType("elink_telemetry").length >= 1, 3000, "telemetry on the socket");
+    const data = feed.ofType("elink_telemetry")[0].data;
+    const want = expected(radarHill, 67.8908, 21.0803, 343);
+    assert.ok(Math.abs(data.gsDistHorizontalM - want.horizontal) < 0.1);
+    assert.ok(feed.ofType("gs_position").length >= 1, "the new position is announced to the open pages");
+    feed.close();
+  });
+});
+
+describe("ground station backend — one folder per mission", () => {
+  let root: string;
+  let backend: Backend;
+  let payload: ReturnType<typeof startPayloadSimulator>;
+
+  before(async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "bless-e2e-mission-"));
+    backend = await startBackend(path.join(root, "work"), path.join(root, "control"), { ROUTE_SAVE_INTERVAL_MS: "300" });
+    payload = startPayloadSimulator(backend.payloadPort);
+  });
+
+  after(async () => {
+    await payload?.close();
+    await backend?.stop();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const get = (p: string) => request(backend.httpPort, "GET", p);
+  const post = (p: string, body?: string | object) => request(backend.httpPort, "POST", p, body);
+  const logsRoot = () => path.join(backend.workDir, "logs");
+  const missionFolders = () =>
+    fs.readdirSync(logsRoot(), { withFileTypes: true }).filter((e) => e.isDirectory() && e.name.startsWith("mission_")).map((e) => e.name).sort();
+  const readConfig = (folder: string) => {
+    const session = folder.slice("mission_".length);
+    return JSON.parse(fs.readFileSync(path.join(logsRoot(), folder, `mission_config_${session}.json`), "utf-8"));
+  };
+  const elinkRows = async () => (await get("/status")).json().logging.elinkRows as number;
+  const radarHill = { lat: 67.87964, lng: 21.062234, alt: 484, name: "Radar Hill", source: "operator" };
+
+  it("writes nothing to disk, and queues nothing, for a change made before REC", async () => {
+    await until(async () => (await get("/status")).json().halow.connected === true, 5000, "HaLow module connected");
+    assert.equal((await post("/halow/config", { name: "TXPOWER", value: "9" })).json().ok, true);
+    await post("/gs/position", radarHill);
+    assert.deepEqual(missionFolders(), []);
+    assert.deepEqual(logFiles(backend.workDir, "mission_events_"), []);
+    assert.equal((await get("/status")).json().logging.active, false, "a freshly started backend is not recording");
+  });
+
+  it("creates mission_<session> with every file of the run when REC starts", async () => {
+    await sendUdp(backend.udpPort, telemetryPacket({ count: 1, lat: 67.8908, lng: 21.0803, alt: 343 }));
+    await until(async () => (await elinkRows()) >= 1, 4000, "first packet logged");
+
+    const folders = missionFolders();
+    assert.equal(folders.length, 1);
+    assert.equal((await get("/status")).json().logging.active, true, "the first packet of a run starts REC by itself");
+    assert.equal((await get("/status")).json().mission.folder, folders[0]);
+
+    const names = fs.readdirSync(path.join(logsRoot(), folders[0]));
+    const session = folders[0].slice("mission_".length);
+    for (const prefix of ["halow_live_", "elink_live_", "gs_rf_live_", "mission_events_"]) {
+      assert.ok(names.includes(`${prefix}${session}.csv`), `${prefix} is in the folder`);
+    }
+    assert.ok(names.includes(`mission_config_${session}.json`));
+    // nothing else is left loose at the top of logs/ except the route journal
+    const loose = fs.readdirSync(logsRoot(), { withFileTypes: true }).filter((e) => e.isFile()).map((e) => e.name);
+    assert.deepEqual(loose.filter((n) => n.endsWith(".csv") || n.endsWith(".json")), []);
+
+    const events = fs.readFileSync(path.join(logsRoot(), folders[0], `mission_events_${session}.csv`), "utf-8");
+    assert.equal(/GROUND_HALOW_CONFIG/.test(events), false, "the change made before REC is not replayed into the file");
+    assert.match(events, /GROUND_STATION_POSITION,,OPERATOR/);
+  });
+
+  it("the mission configuration says where the GS was, how its radio was set and what the payload runs", async () => {
+    const config = readConfig(missionFolders()[0]);
+    assert.equal(config.schema, 1);
+    assert.equal(config.mission.endedAt, null);
+    assert.equal(config.groundStation.position.name, "Radar Hill");
+    assert.equal(config.groundStation.position.alt, 484);
+    assert.equal(config.groundStation.radio.txPower.dBm, 9);
+    assert.equal(config.groundStation.radio.txPower.origin, "applied-from-software");
+    assert.equal(config.groundStation.radio.appliedFromSoftware.TXPOWER.value, "9");
+    assert.equal(config.groundStation.equipment.confirmedByOperator, false);
+    assert.equal(config.payload.txPower.dBm, null, "the payload's own power is not guessed");
+    assert.equal(config.payload.txPower.origin, "not-changed-this-run");
+    assert.equal(Object.keys(config.groundStation.equipment).includes("payloadAntenna"), false);
+    assert.ok(config.mission.files.some((f: string) => f.startsWith("halow_live_")));
+  });
+
+  it("saves the mission's route as GeoJSON in its folder, already while recording", async () => {
+    const folder = missionFolders()[0];
+    const session = folder.slice("mission_".length);
+    const file = path.join(logsRoot(), folder, `route_${session}.geojson`);
+    for (let i = 1; i <= 3; i++) {
+      await sendUdp(backend.udpPort, telemetryPacket({ count: 10 + i, lat: 67.8908 + i * 0.001, lng: 21.0803 + i * 0.001, alt: 343 + i }));
+      await sleep(80);
+    }
+    const written = () => (fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf-8")) : null);
+    await until(() => (written()?.bless.points ?? 0) >= 4, 5000, "route written while recording");
+
+    const geo = written();
+    assert.equal(geo.type, "FeatureCollection");
+    assert.equal(geo.bless.session, session);
+    assert.equal(geo.bless.reason, "recording");
+    assert.ok(geo.features.some((f: any) => f.geometry.type === "LineString")); // eslint-disable-line @typescript-eslint/no-explicit-any
+    assert.ok(readConfig(folder).mission.files.includes(`route_${session}.geojson`), "the configuration lists it");
+  });
+
+  it("keeps the configuration up to date as equipment, position and payload commands change", async () => {
+    const bad = await post("/gs/equipment", { groundAntenna: { gainDbi: 400 } });
+    assert.equal(bad.status, 400);
+
+    const saved = await post("/gs/equipment", {
+      groundAntenna: { gainDbi: 10, polarization: "vertical" },
+      groundLna: { present: true, gainDb: 20 },
+      groundCableLossDb: 1.5,
+      notes: "Radar Hill, tripod",
+    });
+    assert.equal(saved.status, 200);
+    assert.ok(fs.existsSync(path.join(backend.workDir, "station_equipment.json")), "equipment survives a restart");
+
+    assert.equal((await post("/cmd/SET_TX_POWER", { params: [12] })).json().ok, true);
+    assert.equal((await post("/gs/position", { ...radarHill, alt: 490 })).json().changed, true);
+
+    const config = readConfig(missionFolders()[0]);
+    assert.equal(config.groundStation.equipment.groundAntenna.gainDbi, 10);
+    assert.equal(config.groundStation.equipment.confirmedByOperator, true);
+    assert.equal(config.groundStation.equipmentChanges.length, 1);
+    assert.equal(config.groundStation.positionChanges.length, 1);
+    assert.equal(config.groundStation.positionChanges[0].position.alt, 490);
+    assert.equal(config.payload.txPower.dBm, 12);
+    assert.equal(config.payload.txPower.origin, "command");
+    assert.equal(config.payload.commandsSent.filter((c: any) => c.command === "SET_TX_POWER").length, 1); // eslint-disable-line @typescript-eslint/no-explicit-any
+
+    const events = fs.readFileSync(logFiles(backend.workDir, "mission_events_")[0], "utf-8");
+    assert.match(events, /PAYLOAD_COMMAND,,SENT,,,.*,,SET_TX_POWER;params=12/);
+  });
+
+  it("lists the files of every mission and serves them, but nothing outside the log folders", async () => {
+    const folder = missionFolders()[0];
+    const session = folder.slice("mission_".length);
+    const listed = (await get("/logs")).json() as string[];
+    assert.ok(listed.includes(`${folder}/halow_live_${session}.csv`));
+    assert.ok(listed.includes(`${folder}/mission_config_${session}.json`));
+    assert.ok(listed.includes(`${folder}/route_${session}.geojson`));
+    const route = await get(`/logs/${folder}/route_${session}.geojson`);
+    assert.equal(route.status, 200);
+    assert.match(String(route.headers["content-type"]), /geo\+json/);
+
+    const csv = await get(`/logs/${folder}/elink_live_${session}.csv`);
+    assert.equal(csv.status, 200);
+    assert.match(String(csv.headers["content-type"]), /text\/csv/);
+    const json = await get(`/logs/${folder}/mission_config_${session}.json`);
+    assert.equal(json.status, 200);
+    assert.equal(json.json().mission.session, session);
+
+    assert.equal((await get(`/logs/${folder}/..%2F..%2Fpackage.json`)).status, 404);
+    assert.equal((await get(`/logs/%2E%2E/${folder}/x.csv`)).status, 404);
+    assert.equal((await get(`/logs/elsewhere/halow_live_${session}.csv`)).status, 404);
+    assert.equal((await get(`/logs/${folder}/nope.csv`)).status, 404);
+    assert.equal((await get(`/logs/${folder}/a/b.csv`)).status, 404);
+  });
+
+  it("keeps the mission's own route journal, one point per line, in its folder", async () => {
+    const folder = missionFolders()[0];
+    const session = folder.slice("mission_".length);
+    const file = path.join(logsRoot(), folder, `route_${session}.ndjson`);
+    assert.ok(fs.existsSync(file), "route_<session>.ndjson is in the mission folder");
+    const points = fs.readFileSync(file, "utf-8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.ok(points.length >= 4);
+    assert.ok(points.every((p: any) => typeof p.lat === "number" && typeof p.lng === "number" && (p.link === "halow" || p.link === "elink"))); // eslint-disable-line @typescript-eslint/no-explicit-any
+    assert.equal(readConfig(folder).mission.rows.route, points.length, "the configuration counts the same points");
+    assert.ok(readConfig(folder).mission.files.includes(`route_${session}.ndjson`));
+
+    const served = await get(`/logs/${folder}/route_${session}.ndjson`);
+    assert.equal(served.status, 200);
+    assert.match(String(served.headers["content-type"]), /ndjson/);
+  });
+
+  it("closes the folder at REC stop; a change between missions only shows in the next configuration", async () => {
+    const first = missionFolders()[0];
+    const stopped = (await post("/logging/stop")).json();
+    assert.equal(stopped.active, false);
+    assert.ok(readConfig(first).mission.endedAt, "the end time is written");
+    const finalRoute = JSON.parse(fs.readFileSync(path.join(logsRoot(), first, `route_${first.slice("mission_".length)}.geojson`), "utf-8"));
+    assert.equal(finalRoute.bless.reason, "rec-stop", "REC stop writes the final route");
+
+    // a radio change between missions must not land in the finished folder
+    assert.equal((await post("/halow/config", { name: "TXPOWER", value: "11" })).json().ok, true);
+    const session = first.slice("mission_".length);
+    const finished = fs.readFileSync(path.join(logsRoot(), first, `mission_events_${session}.csv`), "utf-8");
+    assert.equal(finished.includes("TXPOWER=11"), false);
+    assert.equal(readConfig(first).groundStation.radio.appliedFromSoftware.TXPOWER.value, "9");
+
+    await sleep(1100);                                  // session names carry seconds
+    await post("/logging/start");
+    await until(() => missionFolders().length === 2, 3000, "second mission folder");
+    const second = missionFolders()[1];
+    const secondSession = second.slice("mission_".length);
+    const events = fs.readFileSync(path.join(logsRoot(), second, `mission_events_${secondSession}.csv`), "utf-8");
+    assert.equal(events.includes("TXPOWER=11"), false, "nothing is queued from between the missions");
+    assert.equal(readConfig(second).groundStation.radio.txPower.dBm, 11, "the configuration does say it, with its time");
+    assert.ok(readConfig(second).groundStation.radio.appliedFromSoftware.TXPOWER.at);
+    // the position and equipment are not asked for again: they carry over
+    assert.equal(readConfig(second).groundStation.position.name, "Radar Hill");
+    assert.equal(readConfig(second).groundStation.equipment.groundAntenna.polarization, "vertical");
+
+    // each mission's route journal holds only its own points
+    for (let i = 0; i < 2; i++) {
+      await sendUdp(backend.udpPort, telemetryPacket({ count: 500 + i, lat: 67.95 + i * 0.002, lng: 21.2 + i * 0.002, alt: 900 + i }));
+      await sleep(80);
+    }
+    const journal = (folder: string) => fs.readFileSync(
+      path.join(logsRoot(), folder, `route_${folder.slice("mission_".length)}.ndjson`), "utf-8",
+    ).trim().split("\n").map((l) => JSON.parse(l).pkt as number);
+    await until(() => fs.existsSync(path.join(logsRoot(), second, `route_${secondSession}.ndjson`)) && journal(second).length >= 2, 4000, "second journal");
+    assert.deepEqual(journal(second), [500, 501]);
+    assert.equal(journal(missionFolders()[0]).some((n) => n >= 500), false, "the first mission's journal is closed");
+  });
+
+  it("keeps the saved equipment in its own file and serves it back", async () => {
+    const saved = JSON.parse(fs.readFileSync(path.join(backend.workDir, "station_equipment.json"), "utf-8"));
+    assert.equal(saved.groundLna.gainDb, 20);
+    assert.equal((await get("/gs/equipment")).json().equipment.notes, "Radar Hill, tripod");
   });
 });

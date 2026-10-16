@@ -110,6 +110,42 @@ describe("live data provider", () => {
     expect(result.current.telemetry.rssi).toBe(-66);
   });
 
+  it("keeps each link's own telemetry: E-Link packets never refresh the HaLow data", async () => {
+    const { result, socket } = mount();
+    act(() => socket().open());
+    act(() => socket().receive({ type: "elink_telemetry", data: packet({ packetCount: 7, altitude: 500 }) }));
+    await flush(1000);
+    expect(result.current.elinkTelemetry.packetCount).toBe(7);
+    expect(result.current.halowTelemetry.packetCount).toBeNull();
+    expect(result.current.connection.halowFresh).toBe(false);
+    expect(result.current.connection.elinkFresh).toBe(true);
+
+    act(() => socket().receive({ type: "telemetry", data: packet({ packetCount: 3, altitude: 480 }) }));
+    await flush(1000);
+    expect(result.current.halowTelemetry.packetCount).toBe(3);
+    expect(result.current.connection.halowFresh).toBe(true);
+  });
+
+  it("marks only the quiet link INTERRUPTED and keeps its last values", async () => {
+    const { result, socket } = mount();
+    act(() => socket().open());
+    act(() => socket().receive({ type: "telemetry", data: packet({ packetCount: 1, halowStatus: "ACTIVE", rssi: -60 }) }));
+    act(() => socket().receive({ type: "elink_telemetry", data: packet({ packetCount: 1, halowStatus: "ACTIVE" }) }));
+    await flush(1000);
+    expect(result.current.halowTelemetry.halowStatus).toBe("ACTIVE");
+
+    // E-Link keeps arriving every 5 s, HaLow stops
+    for (let i = 0; i < 7; i++) {
+      await flush(5000);
+      act(() => socket().receive({ type: "elink_telemetry", data: packet({ packetCount: 2 + i, halowStatus: "ACTIVE" }) }));
+    }
+    expect(result.current.connection.halowFresh).toBe(false);
+    expect(result.current.halowTelemetry.halowStatus).toBe("INTERRUPTED");
+    expect(result.current.halowTelemetry.packetCount).toBe(1);
+    expect(result.current.elinkTelemetry.halowStatus).toBe("ACTIVE");
+    expect(result.current.connection.mode).toBe("elink");
+  });
+
   it("keeps the recorded route in step with the backend", async () => {
     const { result, socket } = mount();
     act(() => socket().open());
@@ -188,6 +224,37 @@ describe("live data provider", () => {
     expect(result.current.telemetry.packetCount).toBeNull();
   });
 
+  it("keeps the payload's RSSI and the ground station's RSSI in separate fields and histories", () => {
+    const { result, socket } = mount();
+    act(() => socket().open());
+
+    // the payload sends zeros; the ground module has a reading: the payload fields stay empty
+    act(() => socket().receive({
+      type: "elink_telemetry",
+      data: packet({ packetCount: 1, rssi: 0, snr: 0, noiseFloor: 0, freqDevHz: 0, gsRssi: -81, gsSnr: 20, gsNoiseFloor: -101 }),
+    }));
+    expect(result.current.elinkTelemetry.rssi).toBeNull();
+    expect(result.current.elinkTelemetry.gsRssi).toBe(-81);
+    expect(result.current.elinkTelemetry.rssiHistory).toEqual([]);
+    expect(result.current.elinkTelemetry.gsRssiHistory.map((p) => p.rssi)).toEqual([-81]);
+
+    // both measure: each history gets its own value
+    act(() => socket().receive({
+      type: "elink_telemetry",
+      data: packet({ packetCount: 2, timestamp: 17_000, rssi: -40, snr: 38, gsRssi: -54, gsSnr: 30 }),
+    }));
+    expect(result.current.elinkTelemetry.rssiHistory.map((p) => p.rssi)).toEqual([-40]);
+    expect(result.current.elinkTelemetry.gsRssiHistory.map((p) => p.rssi)).toEqual([-81, -54]);
+
+    // and the HaLow link keeps its own pair too
+    act(() => socket().receive({
+      type: "telemetry",
+      data: packet({ packetCount: 3, rssi: -45, gsRssi: -58 }),
+    }));
+    expect(result.current.halowTelemetry.rssi).toBe(-45);
+    expect(result.current.halowTelemetry.gsRssi).toBe(-58);
+  });
+
   it("remembers the ground-station coordinates and adopts changes made in another tab", () => {
     const { result } = mount();
     expect(result.current.groundStation.lat).toBeCloseTo(67.8856, 4);
@@ -200,5 +267,53 @@ describe("live data provider", () => {
     act(() => { window.dispatchEvent(new StorageEvent("storage", { key: "bless-ground-station" })); });
     expect(result.current.groundStation.lat).toBe(68);
     expect(result.current.groundStation.name).toBe("Other");
+  });
+
+  describe("reporting the ground station to the backend", () => {
+    const reports = () => fetchMock.mock.calls
+      .filter(([url]) => String(url).endsWith("/gs/position"))
+      .map(([, init]) => JSON.parse(init.body));
+
+    it("sends the campaign default, marked as default, when the operator has set nothing", async () => {
+      const { socket } = mount();
+      expect(reports()).toHaveLength(0);          // nothing before the backend connection is up
+      act(() => socket().open());
+      await flush();
+      expect(reports()).toHaveLength(1);
+      expect(reports()[0]).toMatchObject({ source: "default", name: "Esrange Space Center" });
+    });
+
+    it("sends the operator's coordinates as soon as they are saved", async () => {
+      const { result, socket } = mount();
+      act(() => socket().open());
+      await flush();
+      act(() => result.current.setGroundStation({ lat: 67.87964, lng: 21.062234, alt: 484, name: "Radar Hill" }));
+      await flush();
+      expect(reports().at(-1)).toEqual({ lat: 67.87964, lng: 21.062234, alt: 484, name: "Radar Hill", source: "operator" });
+    });
+
+    it("sends the saved coordinates again after the WebSocket reconnects", async () => {
+      window.localStorage.setItem("bless-ground-station",
+        JSON.stringify({ lat: 67.87964, lng: 21.062234, alt: 484, name: "Radar Hill" }));
+      const { socket } = mount();
+      act(() => socket().open());
+      await flush();
+      expect(reports()).toHaveLength(1);
+      expect(reports()[0]).toMatchObject({ source: "operator", alt: 484 });
+
+      act(() => socket().close());
+      await flush(3100);
+      act(() => socket().open());
+      await flush();
+      expect(reports()).toHaveLength(2);
+    });
+
+    it("keeps working when the backend cannot be reached", async () => {
+      fetchMock.mockRejectedValue(new Error("offline"));
+      const { result, socket } = mount();
+      act(() => socket().open());
+      await flush();
+      expect(result.current.connection.wsConnected).toBe(true);
+    });
   });
 });

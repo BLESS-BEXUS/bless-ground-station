@@ -91,6 +91,10 @@ export interface BlessPacket {
   gsMcs?: number;
   gsNoiseFloor?: number;
   gsPer?: number;
+  // Distance from the ground station to the payload, in metres (set once the operator
+  // has entered the ground station's coordinates and the payload has a GNSS fix)
+  gsDistHorizontalM?: number;
+  gsDistSlantM?: number;
 }
 
 function crc16(buf: Buffer, length: number): number {

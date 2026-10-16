@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeWebSocket, packet, Providers } from "./helpers";
 import TelemetryChartsPage from "@/pages/TelemetryChartsPage";
@@ -60,17 +60,44 @@ describe("Telemetría page", () => {
     expect(screen.getAllByTestId("chart").length).toBeGreaterThan(10);
   });
 
-  it("falls back to the ground module's figures when the payload reports 0", () => {
+  const card = (title: string) => {
+    const heading = screen.getByRole("heading", { name: title });
+    return within(heading.closest("section") as HTMLElement);
+  };
+
+  it("draws the payload's RSSI and the ground station's RSSI in two separate charts", () => {
     render(<Providers><TelemetryChartsPage /></Providers>);
     const ws = connect();
     act(() => {
+      ws.receive({ type: "gs_rf", data: { t: Date.now() + 500, rssi: -54, snr: 30, noiseFloor: -84, background: -60 } });
+      ws.receive({
+        type: "elink_telemetry",
+        data: packet({ rssi: -40, snr: 38, noiseFloor: -78, freqDevHz: 100, gsRssi: -54, gsSnr: 30, gsNoiseFloor: -84 }),
+      });
+    });
+    expect(card("RSSI · payload").getAllByText("-40.0").length).toBeGreaterThan(0);
+    expect(card("RSSI · payload").queryByText("-54.0")).toBeNull();
+    expect(card("RSSI · ground station").getAllByText("-54.0").length).toBeGreaterThan(0);
+    expect(card("RSSI · ground station").queryByText("-40.0")).toBeNull();
+    for (const title of ["SNR", "Noise floor", "Frequency deviation"]) {
+      expect(screen.getByRole("heading", { name: `${title} · payload` })).toBeTruthy();
+      expect(screen.getByRole("heading", { name: `${title} · ground station` })).toBeTruthy();
+    }
+  });
+
+  it("when the payload reports 0 its chart stays empty: the ground module's RSSI does not fill it", () => {
+    render(<Providers><TelemetryChartsPage /></Providers>);
+    const ws = connect();
+    act(() => {
+      ws.receive({ type: "gs_rf", data: { t: Date.now() + 500, rssi: -81, snr: 20, noiseFloor: -101, background: -60 } });
       ws.receive({
         type: "elink_telemetry",
         data: packet({ rssi: 0, snr: 0, noiseFloor: 0, freqDevHz: 0, gsRssi: -81, gsSnr: 20, gsNoiseFloor: -101 }),
       });
     });
-    expect(screen.getAllByText("ground module").length).toBeGreaterThan(0);
-    expect(screen.getByText("-81.0")).toBeTruthy();
+    expect(card("RSSI · payload").getByText(/The payload reports no RSSI/)).toBeTruthy();
+    expect(card("RSSI · payload").queryByText("-81.0")).toBeNull();
+    expect(card("RSSI · ground station").getAllByText("-81.0").length).toBeGreaterThan(0);
   });
 
   it("restores the history sent when the page reconnects", () => {

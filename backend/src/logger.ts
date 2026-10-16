@@ -52,6 +52,8 @@ function packetToRow(p: BlessPacket, includeGs = false): string {
       String(p.gsMcs ?? ""),
       String(p.gsNoiseFloor ?? ""),
       String(p.gsPer ?? ""),
+      String(p.gsDistHorizontalM ?? ""),
+      String(p.gsDistSlantM ?? ""),
     );
   }
   return base.join(",");
@@ -79,11 +81,13 @@ export class MissionLogger {
     console.log(`[logger] Ready — ${this.filePath} (logging OFF)`);
   }
 
-  start(sessionId = new Date().toISOString().replace(/[:.]/g, "-")): void {
+  /** `dir` is where this session's file goes (a mission folder); it defaults to the log directory. */
+  start(sessionId = new Date().toISOString().replace(/[:.]/g, "-"), dir = this.logDir): void {
     if (this.active) return;
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     const parsed = path.parse(this.baseFilename);
     this.filePath = path.join(
-      this.logDir,
+      dir,
       `${parsed.name}_${sessionId}${parsed.ext || ".csv"}`,
     );
     this.active = true;
@@ -129,10 +133,11 @@ export class GsRfLogger {
     this.filePath = path.join(logDir, baseFilename);
   }
 
-  start(sessionId = new Date().toISOString().replace(/[:.]/g, "-")): void {
+  start(sessionId = new Date().toISOString().replace(/[:.]/g, "-"), dir = this.logDir): void {
     if (this.active) return;
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     const parsed = path.parse(this.baseFilename);
-    this.filePath = path.join(this.logDir, `${parsed.name}_${sessionId}${parsed.ext || ".csv"}`);
+    this.filePath = path.join(dir, `${parsed.name}_${sessionId}${parsed.ext || ".csv"}`);
     this.active = true;
     this.rowCount = 0;
     fs.writeFileSync(this.filePath, GS_RF_HEADER, "utf-8");
@@ -187,10 +192,11 @@ export class MissionEventLogger {
     this.filePath = path.join(logDir, filename);
   }
 
-  start(sessionId = new Date().toISOString().replace(/[:.]/g, "-")): void {
+  start(sessionId = new Date().toISOString().replace(/[:.]/g, "-"), dir = this.logDir): void {
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     const parsed = path.parse(this.baseFilename);
     this.filePath = path.join(
-      this.logDir,
+      dir,
       `${parsed.name}_${sessionId}${parsed.ext || ".csv"}`,
     );
     this.rowCount = 0;
@@ -199,9 +205,21 @@ export class MissionEventLogger {
     console.log(`[event-logger] START — ${this.filePath}`);
   }
 
+  /** After a stop, events are not written: a finished mission's file is never touched again. */
+  stop(): void {
+    this.active = false;
+  }
+
+  private append(row: string): void {
+    // Outside a mission nothing is queued or written. What was set before REC is read
+    // from the ground module's applied settings when the mission starts (missionConfig.ts).
+    if (!this.active) return;
+    fs.appendFileSync(this.filePath, row + "\n", "utf-8");
+    this.rowCount++;
+  }
+
   writeMissionTimeSync(event: MissionTimeSyncEvent): void {
-    if (!this.active) this.start();
-    const row = [
+    this.append([
       "MISSION_TIME_SYNC",
       event.commandId,
       "CONFIRMED",
@@ -210,15 +228,13 @@ export class MissionEventLogger {
       event.commandSentUtc,
       event.confirmedUtc,
       event.source,
-    ].join(",");
-    fs.appendFileSync(this.filePath, row + "\n", "utf-8");
-    this.rowCount++;
+    ].join(","));
   }
 
   /**
-   * A change made to the ground-station HaLow module, in the same file and columns
-   * as the time syncs: the setting goes in `source` (e.g. TXPOWER=12), so RSSI and
-   * PDR can be compared against the radio settings that were active at the time.
+   * A change made to the ground-station HaLow module, in the same file and columns as the
+   * time syncs: the setting goes in `source` (e.g. TXPOWER=12), so RSSI and PDR can be
+   * compared against the radio settings that were active at the time.
    */
   writeGroundRadioConfig(event: {
     status: "OK" | "FAILED";
@@ -226,8 +242,7 @@ export class MissionEventLogger {
     sentUtc: string;
     finishedUtc: string;
   }): void {
-    if (!this.active) this.start();
-    const row = [
+    this.append([
       "GROUND_HALOW_CONFIG",
       "",
       event.status,
@@ -236,9 +251,41 @@ export class MissionEventLogger {
       event.sentUtc,
       event.finishedUtc,
       event.setting.replace(/[,\r\n]/g, ";"),
-    ].join(",");
-    fs.appendFileSync(this.filePath, row + "\n", "utf-8");
-    this.rowCount++;
+    ].join(","));
+  }
+
+  /**
+   * Where the ground station is, in the same file and columns as the other events. It is
+   * written at the start of every session and whenever the operator changes it, so each
+   * session's file says from where its distances were measured. The status column says
+   * whether the operator set the coordinates (OPERATOR) or the page fell back to the
+   * campaign default (DEFAULT, no distances are computed in that case).
+   */
+  writeGroundStationPosition(event: { position: string; source: "operator" | "default"; atUtc: string }): void {
+    this.append([
+      "GROUND_STATION_POSITION",
+      "",
+      event.source === "operator" ? "OPERATOR" : "DEFAULT",
+      "",
+      "",
+      "",
+      event.atUtc,
+      event.position,
+    ].join(","));
+  }
+
+  /** A command sent to the payload (SET_TX_POWER, SET_MCS_MODE, ...), with its parameters. */
+  writePayloadCommand(event: { command: string; params: number[]; sentUtc: string }): void {
+    this.append([
+      "PAYLOAD_COMMAND",
+      "",
+      "SENT",
+      "",
+      "",
+      event.sentUtc,
+      "",
+      `${event.command}${event.params.length ? `;params=${event.params.join("/")}` : ""}`,
+    ].join(","));
   }
 
   getFilePath(): string { return this.filePath; }

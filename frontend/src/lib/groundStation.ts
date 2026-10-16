@@ -44,6 +44,18 @@ export function loadGroundStation(): GroundStationLocation {
   }
 }
 
+/**
+ * True once the operator has entered coordinates. Until then the campaign default is in
+ * use, and the backend is told so: it does not compute distances from a place nobody chose.
+ */
+export function isGroundStationConfigured(): boolean {
+  try {
+    return window.localStorage.getItem(GROUND_STATION_STORAGE_KEY) !== null;
+  } catch {
+    return false;
+  }
+}
+
 export function saveGroundStation(location: GroundStationLocation): void {
   try {
     window.localStorage.setItem(GROUND_STATION_STORAGE_KEY, JSON.stringify(location));
