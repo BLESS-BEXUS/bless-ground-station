@@ -1,0 +1,1 @@
+receivedAt,uptimeMs,freqMHz,bwMHz,rssi,snr,noiseFloor,background,rxFrames,rxKbps,rxErrPhy,rxErrFcs,rxGain,txFrames,txPerPct,txKbps,txMcs,txPowerIndex,chipTempC,vcc,stations
