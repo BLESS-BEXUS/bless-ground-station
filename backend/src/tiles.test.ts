@@ -95,6 +95,47 @@ test("when the upstream is down, uncached tiles fail fast and are retried later"
   }
 });
 
+test("an internet outage is reported once, not every back-off, and a recovery is reported too", async () => {
+  const root = tempRoot();
+  const warnings: string[] = [];
+  const logs: string[] = [];
+  const realWarn = console.warn;
+  const realLog = console.log;
+  console.warn = (...args: unknown[]) => { warnings.push(args.join(" ")); };
+  console.log = (...args: unknown[]) => { logs.push(args.join(" ")); };
+  try {
+    let clock = 1_000;
+    let online = false;
+    const cache = new TileCache(root, async () => {
+      if (!online) throw new Error("getaddrinfo ENOTFOUND tile.openstreetmap.org");
+      return PNG;
+    }, () => clock, 4, 20_000);
+
+    // five back-off windows go by, with a request in each: one message in total
+    for (let i = 0; i < 5; i++) {
+      assert.equal(await cache.get({ z: 5, x: i, y: 1 }), null);
+      clock += 21_000;
+    }
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /No internet for new map tiles/);
+    assert.match(warnings[0], /ENOTFOUND/);
+
+    online = true;
+    assert.deepEqual(await cache.get({ z: 5, x: 9, y: 1 }), PNG);
+    assert.equal(logs.filter((l) => /reachable again/.test(l)).length, 1);
+
+    // a new outage after the recovery is reported again
+    online = false;
+    clock += 21_000;
+    assert.equal(await cache.get({ z: 5, x: 10, y: 1 }), null);
+    assert.equal(warnings.length, 2);
+  } finally {
+    console.warn = realWarn;
+    console.log = realLog;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a non-PNG upstream answer is never cached", async () => {
   const root = tempRoot();
   try {

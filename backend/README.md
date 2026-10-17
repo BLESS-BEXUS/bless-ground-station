@@ -195,11 +195,27 @@ then on, so anything you have viewed before opens instantly and works offline.
 When there is no internet, uncached tiles fail immediately (blank) instead of
 making the map wait.
 
-**The tiles are in the repository.** `backend/tiles/` (about 1100 tiles, zoom 0-19 around
-Esrange, Radar Hill, the MPF and the Dome, 8.8 MB) is committed, so after a plain `git clone`
-or `git pull` the map works offline with no extra step. Map data © OpenStreetMap contributors
-(ODbL, see `tiles/NOTICE.md`). Tiles you view that are not there yet are still downloaded when
-there is internet and added to the folder; commit them if they should reach the others.
+**The tiles are in the repository.** `backend/tiles/` (about 2300 tiles, 24 MB) is committed, so
+after a plain `git clone` or `git pull` the map works offline with no extra step. Coverage, all
+centred on Esrange:
+
+| Zoom | Radius | What it is for |
+|---|---|---|
+| 0-7 | 800 km | the whole flight area: the balloon can be 500 km away or more |
+| 8 | 600 km | the coarse background that is enlarged at any higher zoom |
+| 9-10 | 120 km | the surroundings of the launch site |
+| 11-12 | 30 km | the campaign area |
+| 13-16 | 10 and 3 km | Radar Hill, the MPF and the Dome, street level |
+
+The map stacks two layers (`frontend/src/lib/mapTiles.ts`): an overview that only uses zoom 8 or
+lower and is enlarged, and the real tiles on top. Where a detailed tile is not stored, the overview
+shows through, blurry but with the coast, lakes and roads, instead of a hole. A tile that is missing
+is transparent (never a coloured square). The zoom is also capped by how far the balloon is from
+Esrange, so it never offers detail the folder does not hold: full zoom up to 30 km, zoom 10 up to
+120 km, zoom 8 up to 600 km, zoom 7 beyond (zooming out is always free). Map data © OpenStreetMap contributors (ODbL, see
+`tiles/NOTICE.md`). Tiles you view that are not stored are still downloaded when there is internet
+and added to the folder; commit them if they should reach the others. The backend says once, not
+every few seconds, when it has no internet; `TILE_UPSTREAM=off` stops it trying.
 
 | Variable | Default | Meaning |
 |---|---|---|

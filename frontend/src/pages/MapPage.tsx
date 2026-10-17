@@ -6,7 +6,11 @@ import { useLiveData } from "@/hooks/useLiveData";
 import { useMapSimulation } from "@/hooks/useMapSimulation"; // TEMP-SIM
 import { SIM_ELINK_PACKETS, SIM_HALOW_PACKETS } from "@/lib/mapSimulation"; // TEMP-SIM
 import { TILE_URL } from "@/lib/backendUrl";
+import {
+  DETAIL_MAX_NATIVE_ZOOM, MAP_BACKGROUND, MAP_MAX_ZOOM, OVERVIEW_MAX_NATIVE_ZOOM, TRANSPARENT_TILE, maxZoomForDistance,
+} from "@/lib/mapTiles";
 import { fmt, NO_DATA } from "@/lib/format";
+import { GROUND_STATION } from "@/lib/groundStation";
 import {
   ROUTE_COLORS, ROUTE_LABELS, RSSI_GRADIENT, RSSI_MAX_DBM, RSSI_MIN_DBM, RSSI_TICKS,
   routeCounts, routeRuns, rssiFraction, rssiStats, rssiTrack, type RoutePoint,
@@ -18,10 +22,6 @@ const MAP_MODES: { id: MapMode; label: string }[] = [
   { id: "standard", label: "Standard" },
   { id: "rssi", label: "RSSI heat map" },
 ];
-
-// 1×1 transparent PNG, shown instead of a broken-image icon for tiles that are not cached yet
-const BLANK_TILE =
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
 
 function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6371;
@@ -57,6 +57,16 @@ function MapFollower({ lat, lng }: { lat: number; lng: number }) {
     if (first.current) { map.setView([lat, lng], 10); first.current = false; }
     else map.panTo([lat, lng]);
   }, [lat, lng, map]);
+  return null;
+}
+
+/** Stop zooming in past the detail the stored tiles have for where the balloon is. */
+function ZoomLimit({ maxZoom }: { maxZoom: number }) {
+  const map = useMap();
+  useEffect(() => {
+    map.setMaxZoom(maxZoom);
+    if (map.getZoom() > maxZoom) map.setZoom(maxZoom);
+  }, [map, maxZoom]);
   return null;
 }
 
@@ -169,6 +179,11 @@ export default function MapPage() {
     ? slantRangeKm(groundStation.lat, groundStation.lng, groundStation.alt,
         balloon[0], balloon[1], sim.altitude ?? groundStation.alt)
     : null;
+
+  // the stored tiles are centred on Esrange; further out the zoom is capped to what they hold
+  const tileZoomLimit = maxZoomForDistance(
+    balloon ? haversineKm(balloon[0], balloon[1], GROUND_STATION.lat, GROUND_STATION.lng) : null,
+  );
 
   const rssiMode = mapMode === "rssi";
   const counts = useMemo(() => routeCounts(route), [route]);
@@ -338,15 +353,27 @@ export default function MapPage() {
           center={mapCenter}
           zoom={10}
           preferCanvas
-          style={{ height: "100%", width: "100%" }}
+          style={{ height: "100%", width: "100%", background: MAP_BACKGROUND }}
           zoomControl={false}
         >
+          {/* Coarse tiles, enlarged at any zoom: the background wherever the detail layer has no tile */}
           <TileLayer
             url={TILE_URL}
             attribution="&copy; OpenStreetMap contributors"
-            maxZoom={19}
-            errorTileUrl={BLANK_TILE}
+            maxZoom={MAP_MAX_ZOOM}
+            maxNativeZoom={OVERVIEW_MAX_NATIVE_ZOOM}
+            zIndex={1}
+            errorTileUrl={TRANSPARENT_TILE}
           />
+          {/* The real tiles; a missing one is transparent, so the overview shows through */}
+          <TileLayer
+            url={TILE_URL}
+            maxZoom={MAP_MAX_ZOOM}
+            maxNativeZoom={DETAIL_MAX_NATIVE_ZOOM}
+            zIndex={2}
+            errorTileUrl={TRANSPARENT_TILE}
+          />
+          <ZoomLimit maxZoom={tileZoomLimit} />
           <MapAutoResize />
           {/* TEMP-SIM: while the demo runs the map frames the whole flight instead of following */}
           {simulation.active && (

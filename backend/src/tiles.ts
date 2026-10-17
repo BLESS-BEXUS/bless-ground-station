@@ -106,6 +106,8 @@ export function fetchUpstreamTile(tile: TileId, timeoutMs = 5000): Promise<Buffe
 export class TileCache {
   private readonly inflight = new Map<string, Promise<Buffer | null>>();
   private downUntil = 0;
+  /** True while an outage has already been reported, so it is logged once, not every back-off. */
+  private reportedDown = false;
   private active = 0;
   private readonly waiting: (() => void)[] = [];
 
@@ -149,13 +151,19 @@ export class TileCache {
       const tmp = `${file}.${process.pid}.tmp`;
       await fs.promises.writeFile(tmp, data);
       await fs.promises.rename(tmp, file);
+      if (this.reportedDown) {
+        console.log("[tiles] Upstream reachable again");
+        this.reportedDown = false;
+      }
       return data;
     } catch (err) {
-      if (this.now() >= this.downUntil) {
+      if (!this.reportedDown) {
         console.warn(
-          `[tiles] Upstream unavailable (${err instanceof Error ? err.message : String(err)}); `
-          + `serving only cached tiles for ${Math.round(this.backoffMs / 1000)} s`,
+          `[tiles] No internet for new map tiles (${err instanceof Error ? err.message : String(err)}). `
+          + `Serving only the tiles already stored; retrying every ${Math.round(this.backoffMs / 1000)} s `
+          + "(this is reported once). Start the backend with TILE_UPSTREAM=off to stop trying.",
         );
+        this.reportedDown = true;
       }
       this.downUntil = this.now() + this.backoffMs;
       return null;

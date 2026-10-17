@@ -10,8 +10,12 @@ vi.mock("react-leaflet", async () => {
     React.createElement("div", { "data-testid": testId }, children);
   return {
     MapContainer: box("map"),
-    TileLayer: ({ url }: { url: string }) =>
-      React.createElement("div", { "data-testid": "tile-layer", "data-url": url }),
+    TileLayer: ({ url, maxNativeZoom, zIndex, errorTileUrl }: {
+      url: string; maxNativeZoom?: number; zIndex?: number; errorTileUrl?: string;
+    }) =>
+      React.createElement("div", {
+        "data-testid": "tile-layer", "data-url": url, "data-native": maxNativeZoom, "data-z": zIndex, "data-error": errorTileUrl,
+      }),
     Marker: box("marker"),
     Popup: box("popup"),
     Tooltip: box("tooltip"),
@@ -31,6 +35,8 @@ vi.mock("react-leaflet", async () => {
       ),
     useMap: () => ({
       setView() {}, panTo() {}, fitBounds() {}, invalidateSize() {},
+      setMaxZoom(z: number) { (window as unknown as { __maxZoom?: number }).__maxZoom = z; },
+      getZoom: () => 10, setZoom() {},
       getContainer: () => document.createElement("div"),
     }),
   };
@@ -283,7 +289,32 @@ describe("map page", () => {
 
   it("loads its tiles from the backend cache", () => {
     renderMap();
-    expect(screen.getByTestId("tile-layer").getAttribute("data-url")).toMatch(/:8765\/tiles\/\{z\}\/\{x\}\/\{y\}\.png$/);
+    for (const layer of screen.getAllByTestId("tile-layer")) {
+      expect(layer.getAttribute("data-url")).toMatch(/:8765\/tiles\/\{z\}\/\{x\}\/\{y\}\.png$/);
+    }
+  });
+
+  it("caps the zoom to the detail the stored tiles hold, as the balloon goes further from Esrange", () => {
+    const limit = () => (window as unknown as { __maxZoom?: number }).__maxZoom;
+    renderMap();
+    expect(limit()).toBe(19);                                      // no position yet
+    act(() => FakeWebSocket.latest.receive({
+      type: "elink_telemetry", data: packet({ latitude: 67.95, longitude: 21.1, altitude: 3000 }),
+    }));
+    expect(limit()).toBe(19);                                      // about 7 km away
+    act(() => FakeWebSocket.latest.receive({
+      type: "elink_telemetry", data: packet({ latitude: 69.9, longitude: 25.0, altitude: 30000 }),
+    }));
+    expect(limit()).toBe(8);                                       // about 270 km away
+  });
+
+  it("stacks a coarse overview layer under the detail layer, so a missing tile is never a hole", () => {
+    renderMap();
+    const layers = screen.getAllByTestId("tile-layer");
+    expect(layers).toHaveLength(2);
+    const [under, over] = [...layers].sort((a, b) => Number(a.getAttribute("data-z")) - Number(b.getAttribute("data-z")));
+    expect(Number(under.getAttribute("data-native"))).toBeLessThan(Number(over.getAttribute("data-native")));
+    expect(under.getAttribute("data-error")).toBe(over.getAttribute("data-error"));
   });
 
   it("starts on the standard map and draws the route blue while HaLow is received, yellow after", () => {
