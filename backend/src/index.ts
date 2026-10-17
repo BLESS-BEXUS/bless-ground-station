@@ -78,7 +78,10 @@ elinkLogger.open();
 // HaLow GNSS counts as "being received" for this long after the last HaLow packet
 const ROUTE_HALOW_WINDOW_MS = Number(process.env.ROUTE_HALOW_WINDOW_MS ?? 30_000);
 const routeTracker = new RouteTracker(path.resolve("./logs/route.ndjson"), ROUTE_HALOW_WINDOW_MS);
-routeTracker.load();
+// The map starts empty on every run. What the previous run recorded is not lost: each
+// mission keeps its own route in its folder (route_<session>.ndjson), so the live journal
+// is emptied at startup instead of being loaded back onto the map.
+routeTracker.clear();
 
 // Map tiles are fetched once and then served from disk (works offline afterwards)
 const tileCache = new TileCache(path.resolve(process.env.TILE_CACHE_DIR ?? "./tiles"));

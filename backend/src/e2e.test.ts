@@ -700,7 +700,7 @@ describe("ground station backend — hostile and broken input", () => {
 // ─── persistence across a restart ─────────────────────────────────────────────
 
 describe("ground station backend — restart", () => {
-  it("restores the recorded route after the backend restarts, and clears it for good", async () => {
+  it("starts every run with an empty map, and the route stays in its mission folder", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "bless-e2e-restart-"));
     const work = path.join(root, "work");
     const control = path.join(root, "control");
@@ -714,16 +714,19 @@ describe("ground station backend — restart", () => {
       await until(async () => (await request(backend!.httpPort, "GET", "/route")).json().length === 3, 4000, "3 route points");
       await backend.stop();
 
-      backend = await startBackend(work, control);
-      const restored = (await request(backend.httpPort, "GET", "/route")).json();
-      assert.equal(restored.length, 3);
-      assert.deepEqual(restored.map((p: any) => p.rssi), [-60, -65, -70]); // eslint-disable-line @typescript-eslint/no-explicit-any
-      assert.ok(restored.every((p: any) => p.link === "elink")); // eslint-disable-line @typescript-eslint/no-explicit-any
+      // the first run's route is in its own mission folder
+      const [journal] = logFiles(work, "route_").filter((f) => f.endsWith(".ndjson") && /mission_/.test(f));
+      const missionPoints = () => fs.readFileSync(journal, "utf-8").trim().split("\n").map((l) => JSON.parse(l));
+      assert.deepEqual(missionPoints().map((p: any) => p.rssi), [-60, -65, -70]); // eslint-disable-line @typescript-eslint/no-explicit-any
 
-      await request(backend.httpPort, "POST", "/route/clear");
-      await backend.stop();
+      // a new run: the map is empty, even though the previous route was never cleared
       backend = await startBackend(work, control);
       assert.deepEqual((await request(backend.httpPort, "GET", "/route")).json(), []);
+
+      // it builds a fresh route, and the old mission's route is left alone
+      await sendUdp(backend.udpPort, telemetryPacket({ count: 50, lat: 67.95, lng: 21.2, rssi: -80 }));
+      await until(async () => (await request(backend!.httpPort, "GET", "/route")).json().length === 1, 4000, "a fresh point");
+      assert.equal(missionPoints().length, 3, "the finished mission's route is not touched");
     } finally {
       await backend?.stop();
       fs.rmSync(root, { recursive: true, force: true });

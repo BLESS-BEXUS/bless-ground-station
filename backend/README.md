@@ -179,9 +179,11 @@ Each point also stores the packet's `rssi` (dBm), which the RSSI heat map uses. 
 reading of 0 dBm (an occasional payload glitch) or anything outside -130..0 dBm is
 stored as `null` and drawn as a grey dot.
 
-The route is also appended to `logs/route.ndjson`, so it is restored when the
-backend restarts. `GET /route` returns it and `POST /route/clear` empties it (the
-map has a "Clear route" button). It is sent to new WebSocket clients as
+The map starts empty every time the backend starts: the live route is journaled in
+`logs/route.ndjson` while the backend runs, and that journal is emptied at startup.
+Nothing is lost: each mission keeps its own route in its folder (see Logs). `GET /route`
+returns the live route and `POST /route/clear` empties it (the map has a "Clear route"
+button). It is sent to new WebSocket clients as
 `{ "type": "route", "points": [...] }`, followed by `{ "type": "route_point", "point": {...} }`
 for each new fix.
 
@@ -192,6 +194,12 @@ downloaded from OpenStreetMap once, stored in `tiles/`, and served from disk fro
 then on, so anything you have viewed before opens instantly and works offline.
 When there is no internet, uncached tiles fail immediately (blank) instead of
 making the map wait.
+
+**The tiles are in the repository.** `backend/tiles/` (about 1100 tiles, zoom 0-19 around
+Esrange, Radar Hill, the MPF and the Dome, 8.8 MB) is committed, so after a plain `git clone`
+or `git pull` the map works offline with no extra step. Map data © OpenStreetMap contributors
+(ODbL, see `tiles/NOTICE.md`). Tiles you view that are not there yet are still downloaded when
+there is internet and added to the folder; commit them if they should reach the others.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -208,7 +216,7 @@ npm run tiles:prefetch -- --radius-km 3 --min-zoom 14 --max-zoom 16 --yes
 
 OpenStreetMap's tile servers are a shared community resource and their usage
 policy discourages bulk downloads: keep the area small and run it once. To reuse a
-cache on another ground-station computer, copy the `tiles/` folder.
+cache on a computer that does not use the repository, copy the `tiles/` folder.
 
 ## Logs
 
@@ -252,8 +260,8 @@ that mission's points. `route_<session>.geojson` is the same route as a FeatureC
 for QGIS: `route` lines (blue = HaLow GNSS, yellow = E-Link only), one `rssi-leg` line per
 segment colored by signal strength, and one Point per recorded packet. It is rewritten every
 30 s while recording (`ROUTE_SAVE_INTERVAL_MS`) and at REC stop or shutdown. The live map's
-own journal (`logs/route.ndjson`) stays at the top of `./logs`: it is what restores the map
-after a restart, and it is not tied to a mission.
+own journal (`logs/route.ndjson`) stays at the top of `./logs`; it only feeds the map while the
+backend runs, it is emptied at every startup, and it is not tied to a mission.
 
 ### Mission configuration (`mission_config_<session>.json`)
 
