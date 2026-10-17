@@ -3,6 +3,5 @@ dist/
 logs/
 *.log
 .env
-tiles/
 station_equipment.json
 pruebas_claude/
